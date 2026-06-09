@@ -9,85 +9,140 @@ void desenharFase7() {
     short int vE       = values[4]; 
     short int vF       = values[5]; 
     
-    short int vNA      = values[6];  // NOT_A
-    short int vNC      = values[7];  // NOT_C
-    short int vNE      = values[8];  // NOT_E
+    short int vNA      = values[6];  
+    short int vNC      = values[7];  
+    short int vNE      = values[8];  
     
-    short int vAND_AB  = values[9];  // AND(~A, B)
-    short int vNAND_AB = values[10]; // NOT(AND(~A, B))
-    short int vAND_CD  = values[11]; // AND(~C, D)
-    short int vAND_EF  = values[12]; // AND(~E, F)
+    short int vAND_AB  = values[9];  
+    short int vNAND_AB = values[10]; 
+    short int vAND_CD  = values[11]; 
+    short int vAND_EF  = values[12]; 
     
-    short int vAND_L3  = values[13]; // AND(NAND_AB, AND_CD)
-    short int vAND_L4  = values[14]; // AND(AND_L3, AND_EF)
-    short int vS       = values[15]; // Saída Final (S)
+    short int vAND_L3  = values[13]; 
+    short int vAND_L4  = values[14]; 
+    short int vS       = values[15]; 
 
-    // ── 1. Planejamento Espacial (Eixo Y - Afunilamento) ──────────────────
-    // Margens bem distribuídas para acomodar os inversores de entrada
-    int rowA = 2;  
-    int rowB = 6;  
-    int rowC = 12; 
-    int rowD = 16; 
-    int rowE = 22; 
-    int rowF = 26; 
+    // ── Variáveis Booleanas (Blink IHM) ──────────────────────────────────────
+    bool show_A = !(selected_input == 0 && !blink_state);
+    bool show_B = !(selected_input == 1 && !blink_state);
+    bool show_C = !(selected_input == 2 && !blink_state);
+    bool show_D = !(selected_input == 3 && !blink_state);
+    bool show_E = !(selected_input == 4 && !blink_state);
+    bool show_F = !(selected_input == 5 && !blink_state);
 
-    // ── 2. Renderização de Entradas e Inversores Primários ────────────────
-    // Entradas A, C e E passam pelos inversores na Coluna X=5
-    MH(0, 4, rowA, vA); mpNOT(5, rowA - 2, vNA);  // Saída NA em X=7, Y=2
-    MH(0, 4, rowC, vC); mpNOT(5, rowC - 2, vNC);  // Saída NC em X=7, Y=12
-    MH(0, 4, rowE, vE); mpNOT(5, rowE - 2, vNE);  // Saída NE em X=7, Y=22
+    // ── 1. Planejamento Espacial Relativo (Âncoras Y) ────────────────────────
+    int rowA = 2;  int rowB = 6;  
+    int rowC = 12; int rowD = 16; 
+    int rowE = 22; int rowF = 26; 
 
-    // Entradas B, D e F fluem diretamente pelo barramento até a Coluna X=11
-    MH(0, 11, rowB, vB);
-    MH(0, 11, rowD, vD);
-    MH(0, 11, rowF, vF);
+    // ── Planejamento Espacial Relativo (Âncoras X) ───────────────────────────
+    int colNOT = 5;
+    int colL1  = 12; // AND_AB, AND_CD, AND_EF
+    int colL2  = 20; // Inversor NAND_AB
+    int colL3  = 30; // AND_L3
+    int colL4  = 42; // AND_L4
+    int colLED = 53; 
 
-    // ── 3. Estágio Lógico 1 (Portas AND de Front-end - Coluna X=12) ───────
-    // Ajuste de Y para o NA, NC e NE (descendo para encontrar os pinos superiores)
-    MH(7, 10, rowA, vNA); MV(10, rowA, 4, vNA); MH(11, 11, 4, vNA);
-    MH(7, 10, rowC, vNC); MV(10, rowC, 14, vNC); MH(11, 11, 14, vNC);
-    MH(7, 10, rowE, vNE); MV(10, rowE, 24, vNE); MH(11, 11, 24, vNE);
+    // ── Geometria e Terminais das Portas ─────────────────────────────────────
+    int rowNOT_A  = rowA - 2;
+    int rowNOT_C  = rowC - 2;
+    int rowNOT_E  = rowE - 2;
 
-    mpAND(12, 3, vAND_AB);  // Saída em X=17, Y=5
-    mpAND(12, 13, vAND_CD); // Saída em X=17, Y=15
-    mpAND(12, 23, vAND_EF); // Saída em X=17, Y=25
-
-    // ── 4. Estágio Lógico 2 (Inversor Intermediário - Coluna X=20) ────────
-    // Apenas a linha superior recebe inversão (formando a NAND)
-    MH(17, 19, 5, vAND_AB);
-    mpNOT(20, 3, vNAND_AB); // Saída NAND_AB em X=22, Y=5
-
-    // ── 5. Estágio Lógico 3 (Conjunção L3 - Coluna X=30) ──────────────────
-    // Convergência estrutural na Coluna de Derivação X=28
+    int rowAND_AB = rowA + 1; // 3
+    int rowAND_CD = rowC + 1; // 13
+    int rowAND_EF = rowE + 1; // 23
     
-    // Ramo Superior (NAND_AB) descendo para o Pino Topo (Y=10)
-    MH(22, 28, 5, vNAND_AB); MV(28, 5, 10, vNAND_AB); MH(29, 29, 10, vNAND_AB);
-    
-    // Ramo Central (AND_CD) subindo para o Pino Base (Y=12)
-    MH(17, 28, 15, vAND_CD); MV(28, 15, 12, vAND_CD); MH(29, 29, 12, vAND_CD);
-    
-    mpAND(30, 9, vAND_L3);  // Saída L3 em X=35, Y=11
+    int rowNOT_AB = rowAND_AB; // 3
+    int rowAND_L3 = 9;
+    int rowAND_L4 = 17;
 
-    // ── 6. Estágio Lógico Final (Conjunção L4 - Coluna X=42) ──────────────
-    // Convergência final na Coluna de Derivação X=40
+    // Pinos de Saída (Out)
+    int outNA = rowA;
+    int outNC = rowC;
+    int outNE = rowE;
     
-    // Ramo L3 descendo para o Pino Topo (Y=18)
-    MH(35, 40, 11, vAND_L3); MV(40, 11, 18, vAND_L3); MH(41, 41, 18, vAND_L3);
-    
-    // Ramo Inferior (AND_EF) subindo para o Pino Base (Y=20)
-    MH(17, 40, 25, vAND_EF); MV(40, 25, 20, vAND_EF); MH(41, 41, 20, vAND_EF);
+    int outAND_AB  = rowAND_AB + 2; 
+    int outNAND_AB = outAND_AB;     
+    int outAND_CD  = rowAND_CD + 2; 
+    int outAND_EF  = rowAND_EF + 2; 
+    int outAND_L3  = rowAND_L3 + 2; 
+    int outAND_L4  = rowAND_L4 + 2; 
 
-    mpAND(42, 17, vAND_L4); // Saída Final em X=47, Y=19
-
-    // ── 7. Roteamento até o Indicador de Estado Lógico (LED S) ────────────
-    MH(47, 52, 19, vS);
+    // Pinos de Entrada (In1 Topo, In2 Base)
+    int in1_AND_AB = rowAND_AB + 1; // 4 (Row B é 6, entra direto)
+    int in1_AND_CD = rowAND_CD + 1; // 14 (Row D é 16, entra direto)
+    int in1_AND_EF = rowAND_EF + 1; // 24 (Row F é 26, entra direto)
     
-    // Malha do LED indicativo (3x3 pixels)
-    for (int r = 18; r <= 20; r++) {
-        MH(53, 55, r, vS);
+    int in1_AND_L3 = rowAND_L3 + 1; int in2_AND_L3 = rowAND_L3 + 3;
+    int in1_AND_L4 = rowAND_L4 + 1; int in2_AND_L4 = rowAND_L4 + 3;
+
+    // Colunas de Derivação Vertical
+    int colDerivL1 = colL1 - 2; // 10
+    int colDerivL3 = colL3 - 2; // 28
+    int colDerivL4 = colL4 - 2; // 40
+
+    // ── 2. Entradas Iniciais e Inversores Primários ──────────────────────────
+    if (show_A) { MH(0, colNOT - 1, rowA, vA); }
+    if (show_B) { MH(0, colL1 - 1, rowB, vB);  }
+    if (show_C) { MH(0, colNOT - 1, rowC, vC); }
+    if (show_D) { MH(0, colL1 - 1, rowD, vD);  }
+    if (show_E) { MH(0, colNOT - 1, rowE, vE); }
+    if (show_F) { MH(0, colL1 - 1, rowF, vF);  }
+
+    mpNOT(colNOT, rowNOT_A, 2); 
+    mpNOT(colNOT, rowNOT_C, 2); 
+    mpNOT(colNOT, rowNOT_E, 2); 
+
+    // ── 3. Estágio Lógico 1 (Portas AND de Front-end) ────────────────────────
+    MH(colNOT + 3, colDerivL1, outNA, vNA); 
+    MV(colDerivL1, outNA, in1_AND_AB, vNA); 
+    MH(colDerivL1 + 1, colL1 - 1, in1_AND_AB, vNA);
+
+    MH(colNOT + 3, colDerivL1, outNC, vNC); 
+    MV(colDerivL1, outNC, in1_AND_CD, vNC); 
+    MH(colDerivL1 + 1, colL1 - 1, in1_AND_CD, vNC);
+
+    MH(colNOT + 3, colDerivL1, outNE, vNE); 
+    MV(colDerivL1, outNE, in1_AND_EF, vNE); 
+    MH(colDerivL1 + 1, colL1 - 1, in1_AND_EF, vNE);
+
+    mpAND(colL1, rowAND_AB, 2); 
+    mpAND(colL1, rowAND_CD, 2); 
+    mpAND(colL1, rowAND_EF, 2); 
+
+    // ── 4. Estágio Lógico 2 (Inversor Intermediário) ─────────────────────────
+    MH(colL1 + 5, colL2 - 1, outAND_AB, vAND_AB);
+    mpNOT(colL2, rowNOT_AB, 2); 
+
+    // ── 5. Estágio Lógico 3 (Conjunção L3) ───────────────────────────────────
+    MH(colL2 + 3, colDerivL3, outNAND_AB, vNAND_AB); 
+    MV(colDerivL3, outNAND_AB, in1_AND_L3, vNAND_AB); 
+    MH(colDerivL3 + 1, colL3 - 1, in1_AND_L3, vNAND_AB);
+    
+    MH(colL1 + 5, colDerivL3, outAND_CD, vAND_CD); 
+    MV(colDerivL3, outAND_CD, in2_AND_L3, vAND_CD); 
+    MH(colDerivL3 + 1, colL3 - 1, in2_AND_L3, vAND_CD);
+    
+    mpAND(colL3, rowAND_L3, 2); 
+
+    // ── 6. Estágio Lógico Final (Conjunção L4) ───────────────────────────────
+    MH(colL3 + 5, colDerivL4, outAND_L3, vAND_L3); 
+    MV(colDerivL4, outAND_L3, in1_AND_L4, vAND_L3); 
+    MH(colDerivL4 + 1, colL4 - 1, in1_AND_L4, vAND_L3);
+    
+    MH(colL1 + 5, colDerivL4, outAND_EF, vAND_EF); 
+    MV(colDerivL4, outAND_EF, in2_AND_L4, vAND_EF); 
+    MH(colDerivL4 + 1, colL4 - 1, in2_AND_L4, vAND_EF);
+
+    mpAND(colL4, rowAND_L4, 2); 
+
+    // ── 7. Roteamento até o Indicador de Estado Lógico (LED S) ───────────────
+    MH(colL4 + 5, colLED - 1, outAND_L4, vS);
+    
+    for (int r = outAND_L4 - 1; r <= outAND_L4 + 1; r++) {
+        MH(colLED, colLED + 2, r, vS);
     }
 
-    // ── 8. Flush no Framebuffer ───────────────────────────────────────────
+    // ── 8. Flush no Framebuffer ──────────────────────────────────────────────
     renderizarComCores();
-    desenharNumeroFase(7);
 }

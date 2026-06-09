@@ -4,12 +4,12 @@
 
 // ── Dimensões do painel ───────────────────────────────────────────────────────
 
-#define PANEL_WIDTH  64   // largura em pixels
-#define PANEL_HEIGHT 32   // altura em pixels
-#define PANELS_NUM    1   // número de painéis encadeados
+#define PANEL_WIDTH  64
+#define PANEL_HEIGHT 32
+#define PANELS_NUM    1
 
 // ── Estado do Background (Matrix Rain) ───────────────────────────────────────
-#define MATRIX_COLUMNS (PANEL_WIDTH / 5) // Espaçamento entre colunas
+#define MATRIX_COLUMNS (PANEL_WIDTH / 5)
 
 struct MatrixDrop {
     int y;
@@ -20,15 +20,16 @@ MatrixDrop matrix_drops[MATRIX_COLUMNS];
 unsigned long last_matrix_update = 0;
 bool matrix_initialized = false;
 
-// Adicione junto às outras variáveis globais no topo
-bool exibir_resultado = false; 
+bool exibir_resultado = false;
 
-// Adicione a nova cor estática
 static uint16_t COR_NEUTRA  = 0;
 
-// ── Variáveis Globais de Jogo (Declaradas via extern) ─────────────────────────
+// ── Variáveis externas (definidas em Caminho_dos_bits.ino) ────────────────────
 extern int vidas;
 extern int movimentos;
+extern int current_phase;
+extern const int NUM_PHASES;
+extern void onGameStart();
 
 // ── Configuração da biblioteca ────────────────────────────────────────────────
 
@@ -120,19 +121,17 @@ static uint16_t COR_FUNDO   = 0;
 static uint16_t COR_PORTA   = 0;
 
 void inicializarMatriz() {
-  for(int y = 0; y < 32; y++) {
-    for(int x = 0; x < 64; x++) {
-      matriz[y][x] = 3;
-    }
-  }
+    for (int y = 0; y < 32; y++)
+        for (int x = 0; x < 64; x++)
+            matriz[y][x] = 3;
 }
 
 void iniciarCoresFase() {
-    COR_ATIVO   = display->color565(0,   220, 0);    // Verde (Nível Lógico ALTO)
-    COR_INATIVO = display->color565(180, 0,   0);    // Vermelho (Nível Lógico BAIXO)
-    COR_FUNDO   = display->color565(0,   0,   0);    // Preto
-    COR_PORTA   = display->color565(255, 255, 255);  // Branco
-    COR_NEUTRA  = display->color565(0,   0, 255);    // Azul (Fios ocultos)
+    COR_ATIVO   = display->color565(0,   220, 0);
+    COR_INATIVO = display->color565(180, 0,   0);
+    COR_FUNDO   = display->color565(0,   0,   0);
+    COR_PORTA   = display->color565(255, 255, 255);
+    COR_NEUTRA  = display->color565(0,   0,   255);
 }
 
 // ── Helpers internos ──────────────────────────────────────────────────────────
@@ -162,7 +161,6 @@ void mpOR(int col, int row, short int val) {
     MH(col, col+4, row,   val);
     MH(col, col+4, row+6, val);
     MV(col+1, row+1, row+6, val);
-
     MP(col+5, row+1, val);
     MP(col+6, row+2, val);
     MP(col+7, row+3, val);
@@ -174,7 +172,7 @@ void mpNOT(int col, int row, short int val) {
     MP(col,   row,   val);
     MH(col,   col+1, row+1, val);
     MH(col,   col+2, row+2, val);
-    MH(col,   col+1, row+3, val);  
+    MH(col,   col+1, row+3, val);
     MP(col,   row+4, val);
 }
 
@@ -182,19 +180,12 @@ void renderizarComCores() {
     for (int row = 0; row < 32; row++) {
         for (int col = 0; col < 64; col++) {
             uint16_t cor = COR_FUNDO;
-            
-            // Fios (0 = inativo/falso, 1 = ativo/verdadeiro)
+
             if (matriz[row][col] == 0 || matriz[row][col] == 1) {
-                if (exibir_resultado) {
-                    // Revela a propagação real do circuito
-                    cor = (matriz[row][col] == 1) ? COR_ATIVO : COR_INATIVO;
-                } else {
-                    // Mascara tudo como azul enquanto o jogador pensa
-                    cor = COR_NEUTRA;
-                }
-            } 
-            // Portas lógicas
-            else if (matriz[row][col] == 2) {
+                cor = exibir_resultado
+                    ? ((matriz[row][col] == 1) ? COR_ATIVO : COR_INATIVO)
+                    : COR_NEUTRA;
+            } else if (matriz[row][col] == 2) {
                 cor = COR_PORTA;
             }
 
@@ -208,6 +199,7 @@ void reading_next() {
     if (current_screen >= NUM_SCREENS) {
         game_mode      = MODE_PLAYING;
         current_screen = 0;
+        onGameStart();             // ← adiciona esta linha
         display->clearScreen();
         desenharFaseAtual();
     } else {
@@ -238,12 +230,18 @@ void desenharFaseAtual() {
     display->clearScreen();
     if (current_phase >= 1 && current_phase <= NUM_PHASES) {
         fase_screens[current_phase - 1]();
+        
+        // Renderiza o HUD e o número da fase sobrepostos ao circuito da fase
+        desenharHUD();
+        desenharNumeroFase(current_phase);
+    } else {
+        cena_final_jogo();
     }
 }
 
 void desenharNumeroFase(int fase) {
     uint16_t branco = display->color565(255, 255, 255);
-    
+
     display->setFont(&TomThumb);
     display->setTextSize(1);
     display->setTextWrap(false);
@@ -259,49 +257,33 @@ void desenharNumeroFase(int fase) {
     display->setFont(NULL);
 }
 
-// ── Função: HUD de Vidas (Corações) e Movimentos ──────────────────────────────
 void desenharHUD() {
-    uint16_t cor_coracao = display->color565(255, 0, 0);     // Vermelho
-    uint16_t cor_vazio   = display->color565(40, 0, 0);      // Vermelho escuro/apagado
-    uint16_t cor_mov     = display->color565(100, 100, 255); // Azul claro
+    uint16_t cor_coracao = display->color565(255, 0,   0);
+    uint16_t cor_vazio   = display->color565(40,  0,   0);
 
-    int heart_y = PANEL_HEIGHT - 6; // Base inferior para o sprite de 5px
+    // Alinhado verticalmente com o topo do painel (coincide com as linhas 1 a 5 do número da fase)
+    int heart_y = 1; 
+    
+    // Ancoragem horizontal à esquerda do número da fase (Y=5)
+    // i=0 -> X=35 | i=1 -> X=42 | i=2 -> X=49 (o terceiro coração termina em X=53)
+    int x_start = 35; 
 
-    // Desenha 3 corações (ícone pixel art 5x5)
     for (int i = 0; i < 3; i++) {
-        int heart_x = 1 + (i * 7); // Espaçamento horizontal entre corações
+        int heart_x = x_start + (i * 7);
         uint16_t cor = (vidas > i) ? cor_coracao : cor_vazio;
 
-        // Linha 0: topo das duas "orelhas" do coração
         display->drawPixel(heart_x + 1, heart_y + 0, cor);
         display->drawPixel(heart_x + 3, heart_y + 0, cor);
-        // Linha 1: largura máxima superior
         display->drawLine(heart_x + 0, heart_y + 1, heart_x + 4, heart_y + 1, cor);
-        // Linha 2: meio
         display->drawLine(heart_x + 0, heart_y + 2, heart_x + 4, heart_y + 2, cor);
-        // Linha 3: afunilamento
         display->drawLine(heart_x + 1, heart_y + 3, heart_x + 3, heart_y + 3, cor);
-        // Linha 4: base do coração
         display->drawPixel(heart_x + 2, heart_y + 4, cor);
     }
-
-    // Desenhando Movimentos após os corações
-    display->setFont(&TomThumb);
-    display->setTextSize(1);
-    display->setTextWrap(false);
-    display->setTextColor(cor_mov);
-
-    // Posição ajustada para a direita dos corações
-    display->setCursor(24, PANEL_HEIGHT - 1);
-    display->print("M:");
-    display->print(movimentos);
-
-    display->setFont(NULL);
 }
 
 void initMatrixBackground() {
     for (int i = 0; i < MATRIX_COLUMNS; i++) {
-        matrix_drops[i].y = random(-40, 0);
+        matrix_drops[i].y     = random(-40, 0);
         matrix_drops[i].speed = random(1, 4);
     }
     matrix_initialized = true;
@@ -319,17 +301,16 @@ void drawMatrixBackground() {
         display->setTextWrap(false);
 
         for (int i = 0; i < MATRIX_COLUMNS; i++) {
-            int x = i * 5 + 1;
+            int x     = i * 5 + 1;
             int speed = matrix_drops[i].speed;
+            int tail_length = speed * 4 * 5;
 
-            int tail_length = speed * 4 * 5; 
-            display->setTextColor(0x0000); 
+            display->setTextColor(0x0000);
             display->setCursor(x, matrix_drops[i].y - tail_length);
-            
-            display->print("0"); 
+            display->print("0");
 
             matrix_drops[i].y += speed;
-            
+
             display->setTextColor(display->color565(150, 255, 150));
             display->setCursor(x, matrix_drops[i].y);
             display->print(random(2) ? "1" : "0");
@@ -343,7 +324,7 @@ void drawMatrixBackground() {
             display->print(random(2) ? "1" : "0");
 
             if (matrix_drops[i].y - tail_length > PANEL_HEIGHT) {
-                matrix_drops[i].y = random(-20, -5);
+                matrix_drops[i].y     = random(-20, -5);
                 matrix_drops[i].speed = random(1, 4);
             }
         }
@@ -354,20 +335,18 @@ void drawMatrixBackground() {
 // ── Setup do painel ───────────────────────────────────────────────────────────
 
 void inicializar_display() {
-    mxconfig.driver = HUB75_I2S_CFG::FM6124;
+    mxconfig.driver   = HUB75_I2S_CFG::FM6124;
     mxconfig.clkphase = false;
     mxconfig.i2sspeed = HUB75_I2S_CFG::HZ_10M;
 
     display = new MatrixPanel_I2S_DMA(mxconfig);
 
     if (!display->begin()) {
-        Serial.println("ERRO: falha ao inicializar o painel!");
-        while (true) delay(1000);
+        // Sem Serial disponível: sinaliza erro piscando o RGB vermelho
+        // (RGB_R já está HIGH por padrão no setup de Caminho_dos_bits.ino)
+        while (true) delay(500);
     }
 
     display->setBrightness8(128);
     display->clearScreen();
-
-    Serial.println("Painel inicializado. Iniciando testes...");
-    Serial.println();
 }

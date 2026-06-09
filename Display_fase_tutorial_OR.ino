@@ -11,17 +11,12 @@ void desenharFaseTutorialOR() {
     bool show_B = !(selected_input == 1 && !blink_state);
 
     // ── 1. Geometria Centralizada (Painel 64x32) ──────────────────────────
-    // Porta OR tem 7 pixels de altura (desenha topo=0, base=6).
-    // Centralizando em Y=32: (32 - 7) / 2 = 12. Topo = 12, Base = 18.
     int rowOR_Topo = 12; 
     int colOR      = 28; 
 
-    // Entradas do OR: linha de cima é (topo+1), linha de baixo é (topo+5)
-    // Isso entra perfeitamente na concavidade traseira desenhada pelo seu algoritmo
     int rowA = rowOR_Topo + 1; // 13
     int rowB = rowOR_Topo + 5; // 17
 
-    // Saída do OR é na ponta central da curva, em (topo+3)
     int rowSaida = rowOR_Topo + 3; // 15
 
     // ── 2. Roteamento de Fios ─────────────────────────────────────────────
@@ -37,14 +32,25 @@ void desenharFaseTutorialOR() {
     mpOR(colOR, rowOR_Topo, 2); 
 
     // ── 4. Roteamento de Saída e Atuador (LED) ────────────────────────────
-    // Pino central da porta OR termina em (colOR + 7)
     MH(colOR + 8, 50, rowSaida, vOR);
 
-    // Bloco LED Atuador Final (3x3 pixels em Y centrado em rowSaida)
     for (int r = rowSaida - 1; r <= rowSaida + 1; r++) {
         MH(51, 53, r, vOR);
     }
 
     // ── 5. Despacho Gráfico ───────────────────────────────────────────────
     renderizarComCores();
+
+    // ── 6. Camada de Texto Sobreposta (Z-Buffer) ──────────────────────────
+    uint16_t cor_letras = display->color565(255, 255, 255);
+    display->setFont(&TomThumb);
+    display->setTextSize(1);
+    display->setTextWrap(false);
+    display->setTextColor(cor_letras);
+
+    // Texto inferior "OR" posicionado sob a porta: X = (64 - (2 * 4)) / 2 = 28
+    display->setCursor(28, 26);
+    display->print("OR");
+
+    display->setFont(NULL);
 }

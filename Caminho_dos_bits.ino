@@ -16,7 +16,9 @@ extern void     reading_prev();
 extern void     reading_show_current();
 extern void     desenharFaseAtual();
 extern void     alterar_cor_joystick();
-extern bool exibir_resultado;
+extern bool     exibir_resultado;
+extern bool     estado_joystick_painel;
+extern uint16_t hueToRGB565(int hue);
 
 // logic_gate_game_v6.ino
 // 10 fases de portas lógicas — ESP32
@@ -42,7 +44,6 @@ extern bool exibir_resultado;
 // Fase 10 tem 18 nós — MAX_N=20 dá margem para novas fases
 #define MAX_N      20
 #define MAX_INPUTS  6
-#define NUM_PHASES 13
 
 // Animação da borda
 #define PERIMETER       188      // número de pixels na borda externa (2*(64+32)-4)
@@ -59,6 +60,7 @@ Adafruit_NeoPixel fita_LED(NUMERO_LEDS, PIN_DATA_LEDS);
 
 void rgb_verde()    { digitalWrite(RGB_R, LOW);  digitalWrite(RGB_G, HIGH); }
 void rgb_vermelho() { digitalWrite(RGB_R, HIGH); digitalWrite(RGB_G, LOW);  }
+void rgb_neutro()   { digitalWrite(RGB_R, HIGH); digitalWrite(RGB_G, HIGH); } // Mistura = Amarelo
 
 // ── Tipos de porta ────────────────────────────────────────────────────────────
 
@@ -72,10 +74,10 @@ typedef enum {
 // Enum semântico para as faixas — evita números mágicos espalhados
 enum class GameTrack : uint8_t {
   MENU         = 1,
-  TUTORIAL_AND = 2,
-  TUTORIAL_OR  = 3,
-  TUTORIAL_NOT = 4,
-  GAMEPLAY     = 5,
+  GAMEPLAY     = 2,
+  TUTORIAL_AND = 3,
+  TUTORIAL_OR  = 4,
+  TUTORIAL_NOT = 5,
 };
 
 // Estado de áudio — controle de loop sem blocking
@@ -85,24 +87,25 @@ static unsigned long last_audio_check = 0;
 #define AUDIO_POLL_MS 500  // intervalo de polling para reloop (ms)
 
 void playGameMusic(GameTrack track, bool loop = false) {
-  current_track  = track;
-  audio_looping  = loop;
-  dfplayer_play(static_cast<uint8_t>(track));
+    current_track  = track;
+    audio_looping  = loop;
+    
+    // Intertravamento físico: limpa o buffer do decodificador MP3
+    dfplayer_stop(); 
+    delay(30); // Tempo de assentamento (30ms) exigido pelo chip UART do módulo
+    
+    dfplayer_play(static_cast<uint8_t>(track));
 }
 
 void onGameStart() {
-  playGameMusic(GameTrack::GAMEPLAY);
+    // Quando sai do modo de leitura e entra no jogo (Fase 1)
+    playGameMusic(GameTrack::TUTORIAL_AND, false);
 }
 
 // void onGameOver() {
 //   dfplayer_setVolume(20);
 //   playGameMusic(GameTrack::GAMEOVER);
 // }
-
-bool dfplayer_is_playing() {
-  // readState() retorna 1 se estiver tocando, 0 se parado/pausado
-  return player.readState() == 1;
-}
 
 // ── Estado global do circuito ─────────────────────────────────────────────────
 
@@ -128,8 +131,15 @@ bool axis_y_active = false;
 unsigned long last_joy_action = 0;
 static unsigned long last_reading_action = 0;
 static GameMode prev_game_mode = MODE_READING;
+const int NUM_PHASES = 13;
+static unsigned long result_timer_start = 0;
 
 bool display_dirty = true;  // true = precisa redesenhar
+
+// ── Globais para o timer de celebração ───────────────────────────────────────
+static unsigned long victory_timer_start = 0;
+static bool          victory_pending     = false;  // aguardando avançar fase
+static bool          defeat_pending      = false;  // aguardando resetar
 
 // ── Temporização do Efeito Pisca (Blink) ──────────────────────────────────
 unsigned long last_blink_time = 0;
@@ -155,6 +165,8 @@ bool phase_won      = false; // true após S=1; BTN_CYCLE avança fase
 int vidas = 3;
 int movimentos = 0;
 
+unsigned long last_led_update = 0;
+#define LED_UPDATE_MS 50  // atualiza a fita a 20Hz, independente do display
 
 // ── Fórmulas para exibição ────────────────────────────────────────────────────
 
@@ -507,7 +519,9 @@ void load_phase(int phase) {
     switch (phase) {
         case 1:
             init_fase_tutorial_and();
-            playGameMusic(GameTrack::TUTORIAL_AND, false);         // MENU em loop até fase 1 iniciar
+            if (game_mode == MODE_PLAYING) {
+                playGameMusic(GameTrack::TUTORIAL_AND, false);
+            }
             break;
         case 2:
             init_fase_tutorial_or();
@@ -589,34 +603,46 @@ void toggle_input(int input_index) {
 }
 
 void advance_phase() {
-    if (current_phase < NUM_PHASES) {
+    if (current_phase <= NUM_PHASES) {
         current_phase++;
-        load_phase(current_phase);
-        propagate();
+        
+        if (current_phase <= NUM_PHASES) {
+            load_phase(current_phase);
+            propagate();
+        } else {
+            // Atingiu o fim do jogo (Fase Virtual 14)
+            num_inputs = 0; // Desarma o laço de atualização do Blink IHM
+            fita_LED.clear();
+            fita_LED.show();
+        }
     }
     display_dirty = true;
 }
 
 void check_victory() {
-    exibir_resultado = true; // <-- Dispara o gatilho para revelar o circuito em verde/vermelho
-    display_dirty = true;    // <-- Força uma renderização imediata do novo estado
-    
+    exibir_resultado = true;
+    display_dirty    = true;
+    result_timer_start = millis();
+
     if (values[output_id]) {
-        phase_won = true;
-        // Opcional: Adicionar um delay() aqui para o jogador ver a luz verde chegar no final
-        delay(1000); 
-        advance_phase();
+        phase_won            = true;
+        victory_pending      = true;
+        
+        // Dispara a interrupção de hardware para o som de ACERTO (ADVERT/0002.mp3)
+        // A música GAMEPLAY pausa sozinha e retorna automaticamente ao fim do efeito.
+        dfplayer_play_advert(2); 
+        
+        atualizar_rgb();
+        atualizar_fita_led();
     } else {
         vidas--;
-        if (vidas <= 0) {
-            vidas = 3;
-            movimentos = 0;
-            current_phase = 1;
-            // Opcional: Um delay para ele ver onde errou antes de resetar
-            delay(1500);
-            load_phase(current_phase);
-            propagate();
-        }
+        defeat_pending       = true;
+        
+        // Dispara a interrupção de hardware para o som de ERRO (ADVERT/0001.mp3)
+        dfplayer_play_advert(1);
+        
+        atualizar_rgb();
+        atualizar_fita_led();
     }
 }
 
@@ -679,61 +705,56 @@ void handle_joystick(unsigned long now) {
         y_center_time = now;
     }
 
-    bool x_in_center = (abs(x_val - joy_center_x) <= JOY_CENTER_ZONE);
-    if (x_in_center) {
-        if (now - x_center_time > JOY_SETTLE_TIME) {
-            axis_x_active = false;
-        }
-    } else {
-        x_center_time = now;
-    }
+    // bool x_in_center = (abs(x_val - joy_center_x) <= JOY_CENTER_ZONE);
+    // if (x_in_center) {
+    //     if (now - x_center_time > JOY_SETTLE_TIME) {
+    //         axis_x_active = false;
+    //     }
+    // } else {
+    //     x_center_time = now;
+    // }
 
-// ── 3. ESTADO: MODO LEITURA (Varredura de Cenas via Eixo X) ─────────
-    if (game_mode == MODE_READING) {
-        if (!axis_x_active) {
-            if (x_val > joy_center_x + JOY_DEADZONE) {
-                reading_next();
-                axis_x_active = true;
-            } else if (x_val < joy_center_x - JOY_DEADZONE) {
-                reading_prev();
-                axis_x_active = true;
-            }
-        }
-    }
-
-    if (game_mode == MODE_READING && !axis_x_active && (millis() - last_reading_action > 400)) {
+    // ── 3. ESTADO: MODO LEITURA (Varredura de Cenas via Eixo X) ─────────
+    if (game_mode == MODE_READING && !axis_x_active && (now - last_reading_action > 400)) {
         if (x_val > joy_center_x + JOY_DEADZONE) {
             reading_next();
             axis_x_active = true;
-            last_reading_action = millis();
+            last_reading_action = now;
         } else if (x_val < joy_center_x - JOY_DEADZONE) {
             reading_prev();
             axis_x_active = true;
-            last_reading_action = millis();
+            last_reading_action = now;
         }
     }
 
     // ── 4. ESTADO: MODO JOGO (Operação das Portas Lógicas) ──────────────
     if (game_mode == MODE_PLAYING) {
         
-        // Eixo Y (Cima / Baixo): Selecionar qual entrada será operada
-        if (!axis_y_active) {
+        // Trava de segurança da Cena Final
+        if (current_phase > NUM_PHASES) {
+            // Mover para a direita na tela final reinicia o jogo
+            if (!axis_x_active && x_val > joy_center_x + JOY_DEADZONE) { 
+                reiniciar_para_bem_vindo();
+                axis_x_active = true;
+            }
+            return; // Sai da função para bloquear as portas lógicas
+        }
+
+        // Intertravamento (Mutual Exclusion)
+        if (!axis_x_active && !axis_y_active) {
+            
+            // Prioridade de varredura para o Eixo Y (Cima / Baixo)
             if (y_val > joy_center_y + JOY_DEADZONE) {
                 cycle_selected_input(1);
                 axis_y_active = true;
-            } else if (y_val < joy_center_y - JOY_DEADZONE) {
+            } 
+            else if (y_val < joy_center_y - JOY_DEADZONE) {
                 cycle_selected_input(-1);
                 axis_y_active = true;
             }
-        }
-
-        // Eixo X (Direita / Esquerda): Trocar de Fase e Checar Vitória
-        if (!axis_x_active) {
-            if (x_val < joy_center_x - JOY_DEADZONE) { // Movimento para a esquerda (prosseguir/verificar)
+            // Avaliação do Eixo X (DIREITA) para prosseguir/verificar
+            else if (x_val > joy_center_x + JOY_DEADZONE) { 
                 check_victory();
-                axis_x_active = true;
-            } else if (x_val > joy_center_x + JOY_DEADZONE) { // Movimento para a direita (voltar)
-                previous_phase();
                 axis_x_active = true;
             }
         }
@@ -754,8 +775,17 @@ void calibrate_joystick() {
 }
 
 void atualizar_rgb() {
-    if (values[output_id]) rgb_verde();
-    else                   rgb_vermelho();
+    if (exibir_resultado) {
+        // Revela o resultado lógico real apenas após o jogador "prosseguir" (verificar)
+        if (values[output_id]) {
+            rgb_verde();
+        } else {
+            rgb_vermelho();
+        }
+    } else {
+        // Mantém a cor de trabalho/mistura enquanto o jogador estiver operando as chaves
+        rgb_neutro();
+    }
 }
 
 // Sincroniza a fita de LEDs com o estado lógico e a interface do usuário
@@ -764,21 +794,43 @@ void atualizar_fita_led() {
     
     // Iteramos apenas até o número de entradas ativas na fase atual
     for (int i = 0; i < num_inputs; i++) {
+        int node_id = input_ids[i];
+        
         if (i == selected_input) {
-            // A entrada sob o cursor acende em branco (R:255, G:255, B:255)
-            fita_LED.setPixelColor(i, fita_LED.Color(255, 255, 255));
-        } else {
-            // As outras entradas mostram o estado lógico atual da planta
-            // 0 = Vermelho tênue, 1 = Verde tênue
-            int node_id = input_ids[i];
-            if (values[node_id]) {
-                fita_LED.setPixelColor(i, fita_LED.Color(0, 30, 0)); // Estado HIGH
+            // A entrada sob o cursor pisca na cor correspondente ao nível lógico real
+            if (blink_state) {
+                if (values[node_id]) {
+                    fita_LED.setPixelColor(i, fita_LED.Color(0, 255, 0));   // Verde Vivo (HIGH)
+                } else {
+                    fita_LED.setPixelColor(i, fita_LED.Color(255, 0, 0));   // Vermelho Vivo (LOW)
+                }
             } else {
-                fita_LED.setPixelColor(i, fita_LED.Color(30, 0, 0)); // Estado LOW
+                fita_LED.setPixelColor(i, fita_LED.Color(0, 0, 0));         // Apagado no ciclo de oscilação
+            }
+        } else {
+            // As outras entradas mantêm a sinalização em modo tênue (planta de monitoramento)
+            if (values[node_id]) {
+                fita_LED.setPixelColor(i, fita_LED.Color(0, 30, 0));        // Estado HIGH tênue
+            } else {
+                fita_LED.setPixelColor(i, fita_LED.Color(30, 0, 0));        // Estado LOW tênue
             }
         }
     }
     fita_LED.show(); // Dispara o sinal via periférico RMT do ESP32
+}
+
+void atualizar_fita_rainbow() {
+    unsigned long now = millis();
+    for (int i = 0; i < NUMERO_LEDS; i++) {
+        int hue = ((now / 10) + (i * 60)) % 360;
+        uint16_t cor565 = hueToRGB565(hue);
+        // Converte 565 de volta para RGB888 para o NeoPixel
+        uint8_t r = ((cor565 >> 11) & 0x1F) << 3;
+        uint8_t g = ((cor565 >> 5)  & 0x3F) << 2;
+        uint8_t b = ( cor565        & 0x1F) << 3;
+        fita_LED.setPixelColor(i, fita_LED.Color(r, g, b));
+    }
+    fita_LED.show();
 }
 
 void setup() {
@@ -794,9 +846,9 @@ void setup() {
 
     dfplayer_init();            // ← DEVE vir antes de qualquer playGameMusic()
 
+    load_phase(current_phase);  // ← load_phase(1) NÃO deve tocar música agora
     playGameMusic(GameTrack::MENU, true);  // ← MENU em loop imediato no boot
 
-    load_phase(current_phase);  // ← load_phase(1) NÃO deve tocar música agora
     propagate();
 
     inicializar_display();
@@ -804,23 +856,55 @@ void setup() {
     reading_show_current();
 }
 
+void reiniciar_para_bem_vindo() {
+    vidas          = 3;
+    movimentos     = 0;
+    current_phase  = 1;
+    game_mode      = MODE_READING;
+    current_screen = 0;
+    
+    // Prepara a fase 1 em background (sem tocar a música de gameplay ainda)
+    load_phase(current_phase); 
+    
+    // Força o retorno do áudio e da tela inicial
+    playGameMusic(GameTrack::MENU, true);
+    reading_show_current(); 
+}
+
 void loop() {
     unsigned long now = millis();
 
-    if (prev_game_mode == MODE_READING && game_mode == MODE_PLAYING) {
-        if (current_phase == 1) {
-            playGameMusic(GameTrack::TUTORIAL_AND, false);
-        }
+    if (!victory_pending && !defeat_pending) {
+        handle_joystick(now);
     }
-    prev_game_mode = game_mode;
-
-    handle_joystick(now);
 
     // ── Polling de reloop de áudio (substitui EQ/busy pin) ───────────────
     if (audio_looping && (now - last_audio_check >= AUDIO_POLL_MS)) {
         last_audio_check = now;
         if (!dfplayer_is_playing()) {
             dfplayer_play(static_cast<uint8_t>(current_track));
+        }
+    }
+
+    if (now - last_led_update >= LED_UPDATE_MS) {
+        last_led_update = now;
+        if (game_mode == MODE_READING) {
+            
+            // Se estiver na cena "PRESSIONE" (Índice 3 do array reading_screens)
+            if (current_screen == 3) {
+                fita_LED.clear();
+                // Verde se estado for true, Vermelho se for false
+                uint32_t cor_sw = estado_joystick_painel ? fita_LED.Color(0, 220, 0) : fita_LED.Color(220, 0, 0);
+                
+                for (int i = 0; i < NUMERO_LEDS; i++) {
+                    fita_LED.setPixelColor(i, cor_sw);
+                }
+                fita_LED.show();
+            } 
+            // Para as outras telas de leitura, mantém o arco-íris dinâmico
+            else {
+                atualizar_fita_rainbow();
+            }
         }
     }
 
@@ -839,6 +923,9 @@ void loop() {
             last_blink_time = now;
             blink_state = !blink_state; // Alterna o estado do bit (0/1)
             display_dirty = true;       // Aciona o gatilho para atualizar a IHM
+
+            // Força a atualização do barramento periférico da fita de LED a cada transição do clock de pisca
+            atualizar_fita_led();
         }
     }
 
@@ -846,5 +933,22 @@ void loop() {
     if (game_mode == MODE_PLAYING && display_dirty) {
         display_dirty = false;
         desenharFaseAtual();
+    }
+
+    // Timer de vitória: avança fase após 1s sem bloquear
+    if (victory_pending && (millis() - result_timer_start >= 1000)) {
+        victory_pending = false;
+        advance_phase();
+    }
+
+    // Timer de derrota: reseta ou volta fase após 1.5s sem bloquear
+    if (defeat_pending && (millis() - result_timer_start >= 1500)) {
+        defeat_pending = false;
+        exibir_resultado = false; // <-- RESET: Retorna o display para as cores neutras
+        display_dirty = true;     // <-- FORÇA REDESENHO: Avisa o renderizador da mudança
+        
+        if (vidas <= 0) {
+            reiniciar_para_bem_vindo();
+        }
     }
 }

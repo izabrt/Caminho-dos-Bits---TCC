@@ -9,17 +9,25 @@ void desenharFase9() {
     short int vE       = values[4]; 
     short int vF       = values[5]; 
     
-    short int vNA      = values[6];  // NOT_A
-    short int vAND_BC  = values[7];  // AND(B, C)
-    short int vAND_DE  = values[8];  // AND(D, E)
-    short int vAND_FDE = values[9];  // AND(F, AND(D,E))
-    short int vOR1     = values[10]; // OR(NA, AND(B,C))
-    short int vOR2     = values[11]; // OR(NA, AND(F,DE))
+    short int vNA      = values[6];  
+    short int vAND_BC  = values[7];  
+    short int vAND_DE  = values[8];  
+    short int vAND_FDE = values[9];  
+    short int vOR1     = values[10]; 
+    short int vOR2     = values[11]; 
     
-    short int vAND_FINAL = values[12]; // Conjunção Final (AND)
-    short int vS         = values[13]; // Saída Final (Buffer S)
+    short int vAND_FINAL = values[12]; 
+    short int vS         = values[13]; 
 
-    // ── 1. Planejamento Espacial (Eixo Y) ─────────────────────────────────
+    // ── Variáveis Booleanas (Blink IHM) ──────────────────────────────────────
+    bool show_A = !(selected_input == 0 && !blink_state);
+    bool show_B = !(selected_input == 1 && !blink_state);
+    bool show_C = !(selected_input == 2 && !blink_state);
+    bool show_D = !(selected_input == 3 && !blink_state);
+    bool show_E = !(selected_input == 4 && !blink_state);
+    bool show_F = !(selected_input == 5 && !blink_state);
+
+    // ── 1. Planejamento Espacial Relativo (Âncoras Y) ────────────────────────
     int rowA = 2;  
     int rowB = 6;  
     int rowC = 10; 
@@ -27,75 +35,116 @@ void desenharFase9() {
     int rowE = 18; 
     int rowF = 26; 
 
-    // ── 2. Renderização de Entradas e Inversor de Borda ───────────────────
-    MH(0, 4, rowA, vA); mpNOT(5, rowA - 2, vNA); // Saída NA emerge em X=7, Y=2
-    
-    // Entradas fluem para a Coluna X=10 (Preparação L1)
-    MH(0, 10, rowB, vB);
-    MH(0, 10, rowC, vC);
-    MH(0, 10, rowD, vD);
-    MH(0, 10, rowE, vE);
-    
-    // Entrada F sofre um longo bypass, reservada para a Coluna X=20 (L2)
-    MH(0, 20, rowF, vF); 
+    // ── Planejamento Espacial Relativo (Âncoras X) ───────────────────────────
+    int colNOT = 5;
+    int colL1  = 12; // AND_BC, AND_DE
+    int colL2  = 24; // AND_FDE
+    int colL3  = 36; // OR1, OR2
+    int colL4  = 48; // AND_FINAL
+    int colLED = 57; 
 
-    // ── 3. Estágio Lógico 1 (Front-end - Coluna X=12) ─────────────────────
-    // Ajuste em Y para os pinos do AND_BC (Topo=7, Base=9)
-    MV(10, 6, 7, vB);  MH(11, 11, 7, vB);
-    MV(10, 10, 9, vC); MH(11, 11, 9, vC);
-    mpAND(12, 6, vAND_BC); // Saída em X=17, Y=8
+    // ── Geometria e Terminais das Portas ─────────────────────────────────────
+    int rowNOT_A   = rowA - 2;
+    int rowAND_BC  = rowB;     
+    int rowAND_DE  = rowD;     
+    int rowAND_FDE = 21;
+    int rowOR1     = 7;
+    int rowOR2     = 18;
+    int rowAND_FINAL = 12;
 
-    // Ajuste em Y para os pinos do AND_DE (Topo=15, Base=17)
-    MV(10, 14, 15, vD); MH(11, 11, 15, vD);
-    MV(10, 18, 17, vE); MH(11, 11, 17, vE);
-    mpAND(12, 14, vAND_DE); // Saída em X=17, Y=16
+    // Pinos de Saída (Out)
+    int outNA        = rowA;
+    int outAND_BC    = rowAND_BC + 2; 
+    int outAND_DE    = rowAND_DE + 2; 
+    int outAND_FDE   = rowAND_FDE + 2; 
+    int outOR1       = rowOR1 + 3; 
+    int outOR2       = rowOR2 + 3; 
+    int outAND_FINAL = rowAND_FINAL + 2; 
 
-    // ── 4. Estágio Lógico 2 (Cascata F_DE - Coluna X=24) ──────────────────
-    // AND_DE (Y=16) desce para o Pino Topo do L2 (Y=22)
-    MH(17, 20, 16, vAND_DE); MV(20, 16, 22, vAND_DE); MH(21, 23, 22, vAND_DE);
+    // Pinos de Entrada (In1 Topo, In2 Base)
+    int in1_AND_BC = rowAND_BC + 1; int in2_AND_BC = rowAND_BC + 3;
+    int in1_AND_DE = rowAND_DE + 1; int in2_AND_DE = rowAND_DE + 3;
+    int in1_AND_FDE= rowAND_FDE+ 1; int in2_AND_FDE= rowAND_FDE+ 3;
+    int in1_OR1    = rowOR1 + 1;    int in2_OR1    = rowOR1 + 5;    
+    int in1_OR2    = rowOR2 + 1;    int in2_OR2    = rowOR2 + 5;    
+    int in1_AND_FINAL= rowAND_FINAL+1; int in2_AND_FINAL= rowAND_FINAL+3;
+
+    // Colunas de Derivação Vertical
+    int colDerivL1 = colL1 - 2; // 10
+    int colDerivL2 = colL2 - 4; // 20
+    int colDerivJmp= colL3 - 5; // 34 (Duto vertical do NA)
+    int colDerivL4 = colL4 - 2; // 46
+
+    // ── 2. Renderização de Entradas e Inversor de Borda ──────────────────────
+    if (show_A) { MH(0, colNOT - 1, rowA, vA); }
+    if (show_B) { MH(0, colDerivL1, rowB, vB); }
+    if (show_C) { MH(0, colDerivL1, rowC, vC); }
+    if (show_D) { MH(0, colDerivL1, rowD, vD); }
+    if (show_E) { MH(0, colDerivL1, rowE, vE); }
+    if (show_F) { MH(0, colDerivL2, rowF, vF); } 
+
+    mpNOT(colNOT, rowNOT_A, 2); 
+
+    // ── 3. Estágio Lógico 1 (Front-end) ──────────────────────────────────────
+    MV(colDerivL1, rowB, in1_AND_BC, vB); MH(colDerivL1 + 1, colL1 - 1, in1_AND_BC, vB);
+    MV(colDerivL1, rowC, in2_AND_BC, vC); MH(colDerivL1 + 1, colL1 - 1, in2_AND_BC, vC);
+    mpAND(colL1, rowAND_BC, 2); 
+
+    MV(colDerivL1, rowD, in1_AND_DE, vD); MH(colDerivL1 + 1, colL1 - 1, in1_AND_DE, vD);
+    MV(colDerivL1, rowE, in2_AND_DE, vE); MH(colDerivL1 + 1, colL1 - 1, in2_AND_DE, vE);
+    mpAND(colL1, rowAND_DE, 2); 
+
+    // ── 4. Estágio Lógico 2 (Cascata F_DE) ───────────────────────────────────
+    MH(colL1 + 5, colDerivL2, outAND_DE, vAND_DE); 
+    MV(colDerivL2, outAND_DE, in1_AND_FDE, vAND_DE); 
+    MH(colDerivL2 + 1, colL2 - 1, in1_AND_FDE, vAND_DE);
     
-    // F (Y=26) sobe para o Pino Base do L2 (Y=24)
-    MV(20, 26, 24, vF); MH(21, 23, 24, vF);
+    MV(colDerivL2, rowF, in2_AND_FDE, vF); 
+    MH(colDerivL2 + 1, colL2 - 1, in2_AND_FDE, vF);
     
-    mpAND(24, 21, vAND_FDE); // Saída em X=29, Y=23
+    mpAND(colL2, rowAND_FDE, 2); 
 
-    // ── 5. Estágio Lógico 3 (Distribuição NA e Portas OR - Coluna X=36) ───
-    // JUMPER VIRTUAL: Criamos o barramento descendente para NA em X=34.
+    // ── 5. Estágio Lógico 3 (Distribuição NA e Portas OR) ────────────────────
+    // JUMPER VIRTUAL: Barramento descendente para NA
+    MH(colNOT + 3, colDerivJmp, outNA, vNA);  
+    MV(colDerivJmp, outNA, in1_OR2, vNA);     
     
-    MH(7, 34, 2, vNA);        // NA avança até o duto vertical X=34
-    MV(34, 2, 19, vNA);       // NA desce até Y=19 (Pino Topo do OR2)
+    MH(colDerivJmp, colL3 - 1, in1_OR1, vNA); 
+    MH(colDerivJmp, colL3 - 1, in1_OR2, vNA); 
+
+    // Jumper: Alimentação Base OR1 (saltando sobre colDerivJmp)
+    // O fio vem de Y=8, para no X=33 (deixando gap em 34), e retoma em X=35 caindo para Y=12
+    MH(colL1 + 5, colDerivJmp - 1, outAND_BC, vAND_BC);  
+    MV(colDerivJmp + 1, outAND_BC, in2_OR1, vAND_BC);
+    MH(colDerivJmp + 1, colL3 - 1, in2_OR1, vAND_BC);    
     
-    MH(34, 35, 6, vNA);       // Derivação de NA para OR1 (Pino Topo)
-    MH(34, 35, 19, vNA);      // Derivação de NA para OR2 (Pino Topo)
+    // Alimentação Base OR2
+    int colDerivL3_Inf = 31; 
+    MH(colL2 + 5, colDerivL3_Inf, outAND_FDE, vAND_FDE); 
+    MV(colDerivL3_Inf, outAND_FDE, in2_OR2, vAND_FDE); 
+    MH(colDerivL3_Inf, colL3 - 1, in2_OR2, vAND_FDE);
 
-    // Jumper: Alimentação Base OR1 (AND_BC em Y=8) saltando sobre X=34
-    MH(17, 32, 8, vAND_BC);   // Trilha para antes do cruzamento (deixa X=33, 34 vazios)
-    MH(35, 35, 8, vAND_BC);   // Retoma após o cruzamento alimentando o OR1
+    mpOR(colL3, rowOR1, 2);  
+    mpOR(colL3, rowOR2, 2);  
+
+    // ── 6. Estágio Lógico Final (Convergência de Saída) ──────────────────────
+    MH(colL3 + 8, colDerivL4, outOR1, vOR1); 
+    MV(colDerivL4, outOR1, in1_AND_FINAL, vOR1); 
+    MH(colDerivL4 + 1, colL4 - 1, in1_AND_FINAL, vOR1);
     
-    // Alimentação Base OR2 (AND_FDE em Y=23 subindo para Y=21)
-    MH(29, 31, 23, vAND_FDE); MV(31, 23, 21, vAND_FDE); MH(31, 35, 21, vAND_FDE);
+    MH(colL3 + 8, colDerivL4, outOR2, vOR2); 
+    MV(colDerivL4, outOR2, in2_AND_FINAL, vOR2); 
+    MH(colDerivL4 + 1, colL4 - 1, in2_AND_FINAL, vOR2);
 
-    mpOR(36, 5, vOR1);        // Saída em X=41, Y=7
-    mpOR(36, 18, vOR2);       // Saída em X=41, Y=20
+    mpAND(colL4, rowAND_FINAL, 2); 
 
-    // ── 6. Estágio Lógico Final (Convergência de Saída - Coluna X=48) ─────
-    // OR1 (Y=7) desce para o Pino Topo (Y=13)
-    MH(41, 46, 7, vOR1); MV(46, 7, 13, vOR1); MH(47, 47, 13, vOR1);
+    // ── 7. Roteamento até o Indicador de Estado Lógico (LED S) ───────────────
+    MH(colL4 + 5, colLED - 1, outAND_FINAL, vS);
     
-    // OR2 (Y=20) sobe para o Pino Base (Y=15)
-    MH(41, 46, 20, vOR2); MV(46, 20, 15, vOR2); MH(47, 47, 15, vOR2);
-
-    mpAND(48, 12, vAND_FINAL); // Saída em X=53, Y=14
-
-    // ── 7. Roteamento até o Indicador de Estado Lógico (LED S) ────────────
-    MH(53, 56, 14, vS);
-    
-    // Malha do LED indicativo (3x3 pixels)
-    for (int r = 13; r <= 15; r++) {
-        MH(57, 59, r, vS);
+    for (int r = outAND_FINAL - 1; r <= outAND_FINAL + 1; r++) {
+        MH(colLED, colLED + 2, r, vS);
     }
 
-    // ── 8. Flush no Framebuffer ───────────────────────────────────────────
+    // ── 8. Flush no Framebuffer ──────────────────────────────────────────────
     renderizarComCores();
-    desenharNumeroFase(9);
 }

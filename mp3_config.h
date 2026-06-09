@@ -12,3 +12,4 @@ void dfplayer_init();
 void dfplayer_play(uint8_t track);
 void dfplayer_stop();
 void dfplayer_setVolume(uint8_t vol); // 0–30
+void dfplayer_play_advert(uint8_t track);

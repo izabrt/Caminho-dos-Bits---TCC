@@ -834,6 +834,8 @@ void atualizar_fita_rainbow() {
 }
 
 void setup() {
+    delay(500); // dá tempo do monitor serial conectar
+
     pinMode(JOY_SW, INPUT_PULLUP);
     pinMode(RGB_R, OUTPUT);
     pinMode(RGB_G, OUTPUT);
@@ -844,14 +846,16 @@ void setup() {
 
     calibrate_joystick();
 
-    dfplayer_init();            // ← DEVE vir antes de qualquer playGameMusic()
+    dfplayer_init();
 
-    load_phase(current_phase);  // ← load_phase(1) NÃO deve tocar música agora
-    playGameMusic(GameTrack::MENU, true);  // ← MENU em loop imediato no boot
+    load_phase(current_phase);
+    
+    playGameMusic(GameTrack::MENU, true);
 
     propagate();
 
     inicializar_display();
+    
     iniciarCoresFase();
     reading_show_current();
 }
@@ -941,7 +945,7 @@ void loop() {
         advance_phase();
     }
 
-    // Timer de derrota: reseta ou volta fase após 1.5s sem bloquear
+    // Timer de derrota: reseta ou volta fase após 1.5s sem bloquear    
     if (defeat_pending && (millis() - result_timer_start >= 1500)) {
         defeat_pending = false;
         exibir_resultado = false; // <-- RESET: Retorna o display para as cores neutras

@@ -347,6 +347,6 @@ void inicializar_display() {
         while (true) delay(500);
     }
 
-    display->setBrightness8(128);
+    display->setBrightness8(250);
     display->clearScreen();
 }

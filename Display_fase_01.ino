@@ -110,5 +110,4 @@ void desenharFase1() {
         MH(colOR+11, colOR+13, r, vOR);
 
     renderizarComCores();
-    desenharNumeroFase(1);
 }

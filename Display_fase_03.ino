@@ -14,7 +14,7 @@ void desenharFase3() {
     // ── 1. Posicionamento Vertical (Eixo Y) ───────────────────────────────
     int rowA = 4;
     int rowC = 15;
-    int rowE = 26;
+    int rowE = 22;
 
     bool show_A = !(selected_input == 0 && !blink_state);
     bool show_C = !(selected_input == 1 && !blink_state);
@@ -70,15 +70,14 @@ void desenharFase3() {
     
     // Sinal NA (sai na coluna 11, linha 4).
     // Precisa alimentar o topo do AND1 (linha 8) e o topo do AND2 (linha 20).
-    MH(colNOTA + 2, colNOTA + 4, rowA, vNA); // Avança até a coluna 13
+    MH(colNOTA + 3, colNOTA + 4, rowA, vNA); // Avança até a coluna 13
     MV(colNOTA + 4, 5, 20, vNA);             // Distribuição vertical descendo até a linha 20
     MH(colNOTA + 5, colAND1 - 1, 8, vNA);    // Derivação horizontal para AND1
     MH(colNOTA + 5, colAND2 - 1, 20, vNA);   // Derivação horizontal para AND2
 
     // Sinal NE (sai na coluna 11, linha 26).
     // Alimenta a base do AND2 (linha 22).
-    MH(colNOTE + 2, colNOTE + 7, rowE, vNE); // Avança até a coluna 16
-    MV(colNOTE + 7, 22, 25, vNE);            // Elevação vertical até a linha 22
+    MH(colNOTE + 3, colNOTE + 7, rowE, vNE); // Avança até a coluna 16
     MH(colNOTE + 8, colAND2 - 1, 22, vNE);   // Segue horizontal para AND2
 
     // ── 5. Renderização das Portas AND ────────────────────────────────────
@@ -108,5 +107,4 @@ void desenharFase3() {
 
     // ── 8. Atualização de Matriz de Pixels ────────────────────────────────
     renderizarComCores();
-    desenharNumeroFase(3);
 }

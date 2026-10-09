@@ -6,6 +6,7 @@
 #include <gfxfont.h>
 #include "game_types.h"
 #include <Fonts/TomThumb.h>
+#include "mp3_config.h"
 
 // ── Variáveis externas declaradas em Display.ino ──────────────────────────────
 extern GameMode game_mode;
@@ -15,7 +16,9 @@ extern void     reading_prev();
 extern void     reading_show_current();
 extern void     desenharFaseAtual();
 extern void     alterar_cor_joystick();
-
+extern bool     exibir_resultado;
+extern bool     estado_joystick_painel;
+extern uint16_t hueToRGB565(int hue);
 
 // logic_gate_game_v6.ino
 // 10 fases de portas lógicas — ESP32
@@ -24,10 +27,6 @@ extern void     alterar_cor_joystick();
 // Hardware:
 //   BTN_CYCLE  (GPIO 18) INPUT_PULLUP — cicla entradas / avança fase ao vencer
 //   BTN_TOGGLE (GPIO 19) INPUT_PULLUP — alterna valor da entrada selecionada
-//
-// Serial:
-//   'a'..'f' — alterna a entrada correspondente (se existir na fase atual)
-//   'n'      — avança para a próxima fase (só após vencer)
 
 // ── Pinos ─────────────────────────────────────────────────────────────────────
 
@@ -40,13 +39,11 @@ extern void     alterar_cor_joystick();
 
 #define JOY_DEADZONE 700
 
-
 // ── Dimensões máximas ─────────────────────────────────────────────────────────
 
 // Fase 10 tem 18 nós — MAX_N=20 dá margem para novas fases
 #define MAX_N      20
 #define MAX_INPUTS  6
-#define NUM_PHASES 13
 
 // Animação da borda
 #define PERIMETER       188      // número de pixels na borda externa (2*(64+32)-4)
@@ -63,6 +60,7 @@ Adafruit_NeoPixel fita_LED(NUMERO_LEDS, PIN_DATA_LEDS);
 
 void rgb_verde()    { digitalWrite(RGB_R, LOW);  digitalWrite(RGB_G, HIGH); }
 void rgb_vermelho() { digitalWrite(RGB_R, HIGH); digitalWrite(RGB_G, LOW);  }
+void rgb_neutro()   { digitalWrite(RGB_R, HIGH); digitalWrite(RGB_G, HIGH); } // Mistura = Amarelo
 
 // ── Tipos de porta ────────────────────────────────────────────────────────────
 
@@ -72,6 +70,42 @@ typedef enum {
     GATE_OR,     // f = true se ALGUM predecessor for true
     GATE_NOT     // f = !predecessor
 } GateKind;
+
+// Enum semântico para as faixas — evita números mágicos espalhados
+enum class GameTrack : uint8_t {
+  MENU         = 1,
+  GAMEPLAY     = 2,
+  TUTORIAL_AND = 3,
+  TUTORIAL_OR  = 4,
+  TUTORIAL_NOT = 5,
+};
+
+// Estado de áudio — controle de loop sem blocking
+static GameTrack current_track   = GameTrack::MENU;
+static bool      audio_looping   = false;
+static unsigned long last_audio_check = 0;
+#define AUDIO_POLL_MS 500  // intervalo de polling para reloop (ms)
+
+void playGameMusic(GameTrack track, bool loop = false) {
+    current_track  = track;
+    audio_looping  = loop;
+    
+    // Intertravamento físico: limpa o buffer do decodificador MP3
+    dfplayer_stop(); 
+    delay(30); // Tempo de assentamento (30ms) exigido pelo chip UART do módulo
+    
+    dfplayer_play(static_cast<uint8_t>(track));
+}
+
+void onGameStart() {
+    // Quando sai do modo de leitura e entra no jogo (Fase 1)
+    playGameMusic(GameTrack::TUTORIAL_AND, false);
+}
+
+// void onGameOver() {
+//   dfplayer_setVolume(20);
+//   playGameMusic(GameTrack::GAMEOVER);
+// }
 
 // ── Estado global do circuito ─────────────────────────────────────────────────
 
@@ -95,10 +129,17 @@ bool prev_sw = HIGH;
 bool axis_x_active = false;
 bool axis_y_active = false;
 unsigned long last_joy_action = 0;
-unsigned long last_debug_print = 0;
 static unsigned long last_reading_action = 0;
+static GameMode prev_game_mode = MODE_READING;
+const int NUM_PHASES = 13;
+static unsigned long result_timer_start = 0;
 
 bool display_dirty = true;  // true = precisa redesenhar
+
+// ── Globais para o timer de celebração ───────────────────────────────────────
+static unsigned long victory_timer_start = 0;
+static bool          victory_pending     = false;  // aguardando avançar fase
+static bool          defeat_pending      = false;  // aguardando resetar
 
 // ── Temporização do Efeito Pisca (Blink) ──────────────────────────────────
 unsigned long last_blink_time = 0;
@@ -119,7 +160,13 @@ bool      snake_initialized = false;
 
 int  current_phase  = 1;
 int  selected_input = 0;
-bool phase_won      = false; // true após S=1; BTN_CYCLE e 'n' avançam fase
+bool phase_won      = false; // true após S=1; BTN_CYCLE avança fase
+
+int vidas = 3;
+int movimentos = 0;
+
+unsigned long last_led_update = 0;
+#define LED_UPDATE_MS 50  // atualiza a fita a 20Hz, independente do display
 
 // ── Fórmulas para exibição ────────────────────────────────────────────────────
 
@@ -147,9 +194,7 @@ unsigned long last_toggle_press = 0;
 bool prev_cycle  = HIGH;
 bool prev_toggle = HIGH;
 
-// ── Forward declaration ───────────────────────────────────────────────────────
-
-void print_state();
+// ── Leitura de Analógicos ─────────────────────────────────────────────────────
 
 #define FILTER_SIZE 5
 int x_buffer[FILTER_SIZE];
@@ -198,11 +243,6 @@ void edge(int from, int to) {
 
 // ── Inicializadores de cada fase ──────────────────────────────────────────────
 
-// ── FASE TUTORIAL 1: Porta AND ────────────────────────────────────────────────
-// Topologia de rede lógica: 
-// [Nó 0: Entrada A] ──┐
-//                     ├─► [Nó 2: AND] ──► [Nó 3: Saída S]
-// [Nó 1: Entrada B] ──┘
 void init_fase_tutorial_and() {
     num_nos = 4; 
     num_inputs = 2; 
@@ -212,18 +252,12 @@ void init_fase_tutorial_and() {
     input_ids[1] = 1; input_labels[1] = 'B';
 
     kinds[2] = GATE_AND;
-    // O nó 3 (saída) assume implicitamente GATE_BUFFER por clear_circuit()
     
-    edge(0, 2); // Roteamento: A -> AND
-    edge(1, 2); // Roteamento: B -> AND
-    edge(2, 3); // Roteamento: AND -> S
+    edge(0, 2); 
+    edge(1, 2); 
+    edge(2, 3); 
 }
 
-// ── FASE TUTORIAL 2: Porta OR ─────────────────────────────────────────────────
-// Topologia de rede lógica: 
-// [Nó 0: Entrada A] ──┐
-//                     ├─► [Nó 2: OR] ──► [Nó 3: Saída S]
-// [Nó 1: Entrada B] ──┘
 void init_fase_tutorial_or() {
     num_nos = 4; 
     num_inputs = 2; 
@@ -234,14 +268,11 @@ void init_fase_tutorial_or() {
 
     kinds[2] = GATE_OR;
     
-    edge(0, 2); // Roteamento: A -> OR
-    edge(1, 2); // Roteamento: B -> OR
-    edge(2, 3); // Roteamento: OR -> S
+    edge(0, 2); 
+    edge(1, 2); 
+    edge(2, 3); 
 }
 
-// ── FASE TUTORIAL 3: Porta NOT ────────────────────────────────────────────────
-// Topologia de rede lógica (Inversor): 
-// [Nó 0: Entrada A] ──► [Nó 1: NOT] ──► [Nó 2: Saída S]
 void init_fase_tutorial_not() {
     num_nos = 3; 
     num_inputs = 1; 
@@ -251,12 +282,10 @@ void init_fase_tutorial_not() {
 
     kinds[1] = GATE_NOT;
     
-    edge(0, 1); // Roteamento: A -> NOT
-    edge(1, 2); // Roteamento: NOT -> S
+    edge(0, 1); 
+    edge(1, 2); 
 }
 
-// FASE 01: (A~E)+(~AE)  →  XOR(A,E)
-// Nós: 0=A  1=E  2=NOT_A  3=NOT_E  4=AND(A,NE)  5=AND(NA,E)  6=OR  7=S
 void init_fase_1() {
     num_nos = 8; num_inputs = 2; output_id = 7;
     input_ids[0]=0; input_labels[0]='A';
@@ -266,16 +295,14 @@ void init_fase_1() {
     kinds[4]=GATE_AND; kinds[5]=GATE_AND;
     kinds[6]=GATE_OR;
 
-    edge(0,2);            // A   → NOT_A
-    edge(1,3);            // E   → NOT_E
-    edge(0,4); edge(3,4); // A, NOT_E → AND1
-    edge(2,5); edge(1,5); // NOT_A, E → AND2
-    edge(4,6); edge(5,6); // AND1, AND2 → OR
-    edge(6,7);            // OR → S
+    edge(0,2);            
+    edge(1,3);            
+    edge(0,4); edge(3,4); 
+    edge(2,5); edge(1,5); 
+    edge(4,6); edge(5,6); 
+    edge(6,7);            
 }
 
-// FASE 02: (A~B)+(BF)
-// Nós: 0=A  1=B  2=F  3=NOT_B  4=AND(A,NB)  5=AND(B,F)  6=OR  7=S
 void init_fase_2() {
     num_nos = 8; num_inputs = 3; output_id = 7;
     input_ids[0]=0; input_labels[0]='A';
@@ -286,15 +313,13 @@ void init_fase_2() {
     kinds[4]=GATE_AND; kinds[5]=GATE_AND;
     kinds[6]=GATE_OR;
 
-    edge(1,3);            // B → NOT_B
-    edge(0,4); edge(3,4); // A, NOT_B → AND1
-    edge(1,5); edge(2,5); // B, F → AND2
-    edge(4,6); edge(5,6); // AND1, AND2 → OR
+    edge(1,3);            
+    edge(0,4); edge(3,4); 
+    edge(1,5); edge(2,5); 
+    edge(4,6); edge(5,6); 
     edge(6,7);
 }
 
-// FASE 03: (~AC)+(~A~E)
-// Nós: 0=A  1=C  2=E  3=NOT_A  4=NOT_E  5=AND(NA,C)  6=AND(NA,NE)  7=OR  8=S
 void init_fase_3() {
     num_nos = 9; num_inputs = 3; output_id = 8;
     input_ids[0]=0; input_labels[0]='A';
@@ -305,17 +330,14 @@ void init_fase_3() {
     kinds[5]=GATE_AND; kinds[6]=GATE_AND;
     kinds[7]=GATE_OR;
 
-    edge(0,3);            // A → NOT_A
-    edge(2,4);            // E → NOT_E
-    edge(3,5); edge(1,5); // NOT_A, C → AND1
-    edge(3,6); edge(4,6); // NOT_A, NOT_E → AND2
-    edge(5,7); edge(6,7); // AND1, AND2 → OR
+    edge(0,3);            
+    edge(2,4);            
+    edge(3,5); edge(1,5); 
+    edge(3,6); edge(4,6); 
+    edge(5,7); edge(6,7); 
     edge(7,8);
 }
 
-// FASE 04: (AB)+((D+E)~F)
-// Nós: 0=A 1=B 2=D 3=E 4=F | 5=AND(A,B) 6=OR(D,E) 7=NOT_F
-//      8=AND(OR,NF) 9=OR2 10=S
 void init_fase_4() {
     num_nos = 11; num_inputs = 5; output_id = 10;
     input_ids[0]=0; input_labels[0]='A';
@@ -327,18 +349,14 @@ void init_fase_4() {
     kinds[5]=GATE_AND; kinds[6]=GATE_OR; kinds[7]=GATE_NOT;
     kinds[8]=GATE_AND; kinds[9]=GATE_OR;
 
-    edge(0,5); edge(1,5); // A, B → AND1
-    edge(2,6); edge(3,6); // D, E → OR1
-    edge(4,7);            // F → NOT_F
-    edge(6,8); edge(7,8); // OR1, NOT_F → AND2
-    edge(5,9); edge(8,9); // AND1, AND2 → OR2
+    edge(0,5); edge(1,5); 
+    edge(2,6); edge(3,6); 
+    edge(4,7);            
+    edge(6,8); edge(7,8); 
+    edge(5,9); edge(8,9); 
     edge(9,10);
 }
 
-// FASE 05: ((~AB)(~C~D))(EF)
-// Nós: 0=A 1=B 2=C 3=D 4=E 5=F | 6=NA 7=NC 8=ND
-//      9=AND(NA,B) 10=AND(NC,ND) 11=AND(E,F)
-//      12=AND(9,10) 13=AND(12,11) 14=S
 void init_fase_5() {
     num_nos = 15; num_inputs = 6; output_id = 14;
     input_ids[0]=0; input_labels[0]='A';
@@ -352,23 +370,17 @@ void init_fase_5() {
     kinds[9]=GATE_AND; kinds[10]=GATE_AND; kinds[11]=GATE_AND;
     kinds[12]=GATE_AND; kinds[13]=GATE_AND;
 
-    edge(0,6);              // A → NOT_A
-    edge(2,7);              // C → NOT_C
-    edge(3,8);              // D → NOT_D
-    edge(6,9);  edge(1,9);  // NOT_A, B  → AND1
-    edge(7,10); edge(8,10); // NOT_C, ND → AND2
-    edge(4,11); edge(5,11); // E, F      → AND3
-    edge(9,12); edge(10,12);// AND1, AND2 → AND4
-    edge(12,13);edge(11,13);// AND4, AND3 → AND5
+    edge(0,6);              
+    edge(2,7);              
+    edge(3,8);              
+    edge(6,9);  edge(1,9);  
+    edge(7,10); edge(8,10); 
+    edge(4,11); edge(5,11); 
+    edge(9,12); edge(10,12);
+    edge(12,13);edge(11,13);
     edge(13,14);
 }
 
-// FASE 06: (((~AB)((C+D)~(CD)))E)~F
-// ~(CD) faz XOR(C,D) junto com OR(C,D)
-// Nós: 0=A 1=B 2=C 3=D 4=E 5=F | 6=NA 7=NF
-//      8=AND(NA,B)  9=OR(C,D)  10=AND(C,D)  11=NOT(AND_CD)
-//      12=AND(OR,NOT_CD) [XOR]  13=AND(8,12)
-//      14=AND(13,E)  15=AND(14,NF)  16=S
 void init_fase_6() {
     num_nos = 17; num_inputs = 6; output_id = 16;
     input_ids[0]=0; input_labels[0]='A';
@@ -384,23 +396,19 @@ void init_fase_6() {
     kinds[12]=GATE_AND;
     kinds[13]=GATE_AND; kinds[14]=GATE_AND; kinds[15]=GATE_AND;
 
-    edge(0,6);              // A → NOT_A
-    edge(5,7);              // F → NOT_F
-    edge(6,8);  edge(1,8);  // NOT_A, B    → AND(~AB)
-    edge(2,9);  edge(3,9);  // C, D        → OR(C,D)
-    edge(2,10); edge(3,10); // C, D        → AND(C,D)
-    edge(10,11);            // AND(C,D)    → NOT
-    edge(9,12); edge(11,12);// OR, NOT_CD  → XOR(C,D)
-    edge(8,13); edge(12,13);// AND(~AB), XOR → AND
-    edge(13,14);edge(4,14); // AND, E       → AND
-    edge(14,15);edge(7,15); // AND, NOT_F   → AND
+    edge(0,6);              
+    edge(5,7);              
+    edge(6,8);  edge(1,8);  
+    edge(2,9);  edge(3,9);  
+    edge(2,10); edge(3,10); 
+    edge(10,11);            
+    edge(9,12); edge(11,12);
+    edge(8,13); edge(12,13);
+    edge(13,14);edge(4,14); 
+    edge(14,15);edge(7,15); 
     edge(15,16);
 }
 
-// FASE 07: (~(~AB))(~CD)(~EF)
-// Nós: 0=A 1=B 2=C 3=D 4=E 5=F | 6=NA 7=NC 8=NE
-//      9=AND(NA,B)  10=NOT(9)  11=AND(NC,D)  12=AND(NE,F)
-//      13=AND(10,11)  14=AND(13,12)  15=S
 void init_fase_7() {
     num_nos = 16; num_inputs = 6; output_id = 15;
     input_ids[0]=0; input_labels[0]='A';
@@ -415,21 +423,18 @@ void init_fase_7() {
     kinds[11]=GATE_AND; kinds[12]=GATE_AND;
     kinds[13]=GATE_AND; kinds[14]=GATE_AND;
 
-    edge(0,6);              // A → NOT_A
-    edge(2,7);              // C → NOT_C
-    edge(4,8);              // E → NOT_E
-    edge(6,9);  edge(1,9);  // NOT_A, B  → AND(~AB)
-    edge(9,10);             // AND(~AB)  → NOT
-    edge(7,11); edge(3,11); // NOT_C, D  → AND(~CD)
-    edge(8,12); edge(5,12); // NOT_E, F  → AND(~EF)
-    edge(10,13);edge(11,13);// NOT(~AB), AND(~CD) → AND
-    edge(13,14);edge(12,14);// AND, AND(~EF)       → AND
+    edge(0,6);              
+    edge(2,7);              
+    edge(4,8);              
+    edge(6,9);  edge(1,9);  
+    edge(9,10);             
+    edge(7,11); edge(3,11); 
+    edge(8,12); edge(5,12); 
+    edge(10,13);edge(11,13);
+    edge(13,14);edge(12,14);
     edge(14,15);
 }
 
-// FASE 08: ((AB)(~(CD)))(E+F)
-// Nós: 0=A 1=B 2=C 3=D 4=E 5=F | 6=AND(A,B) 7=AND(C,D) 8=NOT(7)
-//      9=OR(E,F)  10=AND(6,8)  11=AND(10,9)  12=S
 void init_fase_8() {
     num_nos = 13; num_inputs = 6; output_id = 12;
     input_ids[0]=0; input_labels[0]='A';
@@ -443,19 +448,15 @@ void init_fase_8() {
     kinds[9]=GATE_OR;
     kinds[10]=GATE_AND; kinds[11]=GATE_AND;
 
-    edge(0,6);  edge(1,6);  // A, B → AND(AB)
-    edge(2,7);  edge(3,7);  // C, D → AND(CD)
-    edge(7,8);              // AND(CD) → NOT
-    edge(4,9);  edge(5,9);  // E, F → OR
-    edge(6,10); edge(8,10); // AND(AB), NOT(CD) → AND
-    edge(10,11);edge(9,11); // AND, OR → AND
+    edge(0,6);  edge(1,6);  
+    edge(2,7);  edge(3,7);  
+    edge(7,8);              
+    edge(4,9);  edge(5,9);  
+    edge(6,10); edge(8,10); 
+    edge(10,11);edge(9,11); 
     edge(11,12);
 }
 
-// FASE 09: (~A+(BC))(~A+(F(DE)))
-// Nós: 0=A 1=B 2=C 3=D 4=E 5=F | 6=NA
-//      7=AND(B,C)  8=AND(D,E)  9=AND(F,8)
-//      10=OR(NA,BC)  11=OR(NA,F_DE)  12=AND(10,11)  13=S
 void init_fase_9() {
     num_nos = 14; num_inputs = 6; output_id = 13;
     input_ids[0]=0; input_labels[0]='A';
@@ -470,21 +471,16 @@ void init_fase_9() {
     kinds[10]=GATE_OR; kinds[11]=GATE_OR;
     kinds[12]=GATE_AND;
 
-    edge(0,6);              // A → NOT_A
-    edge(1,7);  edge(2,7);  // B, C   → AND(BC)
-    edge(3,8);  edge(4,8);  // D, E   → AND(DE)
-    edge(5,9);  edge(8,9);  // F, DE  → AND(F,DE)
-    edge(6,10); edge(7,10); // NA, BC → OR1
-    edge(6,11); edge(9,11); // NA, F_DE → OR2
-    edge(10,12);edge(11,12);// OR1, OR2 → AND
+    edge(0,6);              
+    edge(1,7);  edge(2,7);  
+    edge(3,8);  edge(4,8);  
+    edge(5,9);  edge(8,9);  
+    edge(6,10); edge(7,10); 
+    edge(6,11); edge(9,11); 
+    edge(10,12);edge(11,12);
     edge(12,13);
 }
 
-// FASE 10: (((A~B)C)+(~C(~AB)))+((DE)F)
-// Nós: 0=A 1=B 2=C 3=D 4=E 5=F | 6=NA 7=NB 8=NC
-//      9=AND(A,NB)  10=AND(NA,B)
-//      11=AND(9,C)  12=AND(NC,10)  13=AND(D,E)  14=AND(13,F)
-//      15=OR(11,12)  16=OR(15,14)  17=S
 void init_fase_10() {
     num_nos = 18; num_inputs = 6; output_id = 17;
     input_ids[0]=0; input_labels[0]='A';
@@ -500,17 +496,17 @@ void init_fase_10() {
     kinds[13]=GATE_AND; kinds[14]=GATE_AND;
     kinds[15]=GATE_OR;  kinds[16]=GATE_OR;
 
-    edge(0,6);              // A → NOT_A
-    edge(1,7);              // B → NOT_B
-    edge(2,8);              // C → NOT_C
-    edge(0,9);  edge(7,9);  // A, NOT_B  → AND(A,~B)
-    edge(6,10); edge(1,10); // NOT_A, B  → AND(~A,B)
-    edge(9,11); edge(2,11); // AND(A,NB), C   → AND
-    edge(8,12); edge(10,12);// NOT_C, AND(NA,B)→ AND
-    edge(3,13); edge(4,13); // D, E      → AND(DE)
-    edge(13,14);edge(5,14); // AND(DE), F → AND
-    edge(11,15);edge(12,15);// → OR1
-    edge(15,16);edge(14,16);// → OR2
+    edge(0,6);              
+    edge(1,7);              
+    edge(2,8);              
+    edge(0,9);  edge(7,9);  
+    edge(6,10); edge(1,10); 
+    edge(9,11); edge(2,11); 
+    edge(8,12); edge(10,12);
+    edge(3,13); edge(4,13); 
+    edge(13,14);edge(5,14); 
+    edge(11,15);edge(12,15);
+    edge(15,16);edge(14,16);
     edge(16,17);
 }
 
@@ -518,21 +514,38 @@ void init_fase_10() {
 
 void load_phase(int phase) {
     clear_circuit();
+    exibir_resultado = false;
+
     switch (phase) {
-        case 1:  init_fase_tutorial_and();  break;
-        case 2:  init_fase_tutorial_or();  break;
-        case 3:  init_fase_tutorial_not();  break;
-        case 4:  init_fase_1();  break;
+        case 1:
+            init_fase_tutorial_and();
+            if (game_mode == MODE_PLAYING) {
+                playGameMusic(GameTrack::TUTORIAL_AND, false);
+            }
+            break;
+        case 2:
+            init_fase_tutorial_or();
+            playGameMusic(GameTrack::TUTORIAL_OR, false); // toca uma vez
+            break;
+        case 3:
+            init_fase_tutorial_not();
+            playGameMusic(GameTrack::TUTORIAL_NOT, false);
+            break;
+        case 4:
+            init_fase_1();
+            playGameMusic(GameTrack::GAMEPLAY, true);     // GAMEPLAY em loop a partir daqui
+            break;
         case 5:  init_fase_2();  break;
         case 6:  init_fase_3();  break;
         case 7:  init_fase_4();  break;
         case 8:  init_fase_5();  break;
         case 9:  init_fase_6();  break;
-        case 10:  init_fase_7();  break;
-        case 11:  init_fase_8();  break;
-        case 12:  init_fase_9();  break;
+        case 10: init_fase_7();  break;
+        case 11: init_fase_8();  break;
+        case 12: init_fase_9();  break;
         case 13: init_fase_10(); break;
     }
+
     atualizar_rgb();
     atualizar_fita_led();
 }
@@ -579,58 +592,66 @@ void propagate() {
 void toggle_input(int input_index) {
     int node_id = input_ids[input_index];
     values[node_id] = !values[node_id];
+    movimentos++;
+    
+    exibir_resultado = false; // <-- Esconde as cores ao fazer um novo movimento
+    
     propagate();
     atualizar_rgb();
     atualizar_fita_led();
     display_dirty = true;
 }
 
-// Verifica vitória — apenas marca phase_won para habilitar avanço de fase.
-// A mensagem de vitória é exibida dentro de print_state() quando S=1.
-// O jogador continua podendo alterar entradas normalmente após vencer.
-void check_victory() {
-    if (values[output_id]) {
-        phase_won = true;
-    }
-}
-
 void advance_phase() {
-    Serial.println(">>> advance_phase() chamada");
-
-    if (current_phase < NUM_PHASES) {
+    if (current_phase <= NUM_PHASES) {
         current_phase++;
-        load_phase(current_phase);
-        propagate();
-        Serial.println();
-        Serial.print("=== FASE ");
-        Serial.print(current_phase);
-        Serial.print(" === ");
-        Serial.println(phase_formulas[current_phase - 1]);
-        print_state();
-    } else {
-        Serial.println("Ja esta na ultima fase!");
+        
+        if (current_phase <= NUM_PHASES) {
+            load_phase(current_phase);
+            propagate();
+        } else {
+            // Atingiu o fim do jogo (Fase Virtual 14)
+            num_inputs = 0; // Desarma o laço de atualização do Blink IHM
+            fita_LED.clear();
+            fita_LED.show();
+        }
     }
-
     display_dirty = true;
 }
 
-void previous_phase() {
-    Serial.println(">>> previous_phase() chamada");
+void check_victory() {
+    exibir_resultado = true;
+    display_dirty    = true;
+    result_timer_start = millis();
 
+    if (values[output_id]) {
+        phase_won            = true;
+        victory_pending      = true;
+        
+        // Dispara a interrupção de hardware para o som de ACERTO (ADVERT/0002.mp3)
+        // A música GAMEPLAY pausa sozinha e retorna automaticamente ao fim do efeito.
+        dfplayer_play_advert(2); 
+        
+        atualizar_rgb();
+        atualizar_fita_led();
+    } else {
+        vidas--;
+        defeat_pending       = true;
+        
+        // Dispara a interrupção de hardware para o som de ERRO (ADVERT/0001.mp3)
+        dfplayer_play_advert(1);
+        
+        atualizar_rgb();
+        atualizar_fita_led();
+    }
+}
+
+void previous_phase() {
     if (current_phase > 1) {
         current_phase--;
         load_phase(current_phase);
         propagate();
-        Serial.println();
-        Serial.print("=== FASE ");
-        Serial.print(current_phase);
-        Serial.print(" === ");
-        Serial.println(phase_formulas[current_phase - 1]);
-        print_state();
-    } else {
-        Serial.println("Ja esta na primeira fase!");
     }
-
     display_dirty = true;
 }
 
@@ -640,161 +661,12 @@ void cycle_selected_input(int direction) {
     display_dirty = true;
 }
 
-// ── Exibição ──────────────────────────────────────────────────────────────────
-
-void print_state() {
-    Serial.println("-----------------------------------------");
-    Serial.print("FASE "); Serial.print(current_phase);
-    Serial.print("/"); Serial.print(NUM_PHASES);
-    Serial.print("  f = ");
-    Serial.println(phase_formulas[current_phase - 1]);
-    Serial.println();
-
-    // Entradas — mostra letra, valor e seleção atual
-    for (int i = 0; i < num_inputs; i++) {
-        Serial.print("  ");
-        Serial.print(input_labels[i]);
-        Serial.print(" = ");
-        Serial.print(values[input_ids[i]] ? "1" : "0");
-        if (i == selected_input) Serial.print("  <-- selecionado");
-        Serial.println();
-    }
-
-    Serial.println();
-
-    // Nós internos (portas) — exibe índice e valor
-    for (int i = num_inputs; i < num_nos - 1; i++) {
-        Serial.print("  no["); Serial.print(i); Serial.print("] = ");
-        Serial.println(values[i] ? "1" : "0");
-    }
-
-    Serial.println();
-    Serial.print("  S (saida) = ");
-    Serial.println(values[output_id] ? "1" : "0");
-
-    // Banner de vitória inline — aparece sempre que S=1
-    if (values[output_id]) {
-        Serial.println();
-        Serial.println("  >>> CIRCUITO ATIVADO! Voce venceu! <<<");
-        if (current_phase < NUM_PHASES) {
-            Serial.println("  Use 'n' ou BTN_CYCLE para a proxima fase.");
-        } else {
-            Serial.println("  Parabens! Todas as 10 fases concluidas!");
-        }
-    }
-    Serial.println("-----------------------------------------");
-
-    // Instrução das teclas disponíveis nesta fase
-    Serial.print("[BOTOES] CYCLE=seleciona | TOGGLE=alterna");
-    if (phase_won) Serial.print(" | CYCLE(hold)=prox.fase");
-    Serial.println();
-    Serial.print("[SERIAL] ");
-    for (int i = 0; i < num_inputs; i++) {
-        Serial.print("'");
-        // imprime letra minúscula
-        Serial.print((char)(input_labels[i] + 32));
-        Serial.print("'=");
-        Serial.print(input_labels[i]);
-        if (i < num_inputs - 1) Serial.print(" | ");
-    }
-    if (phase_won && current_phase < NUM_PHASES) Serial.print(" | 'n'=prox.fase");
-    Serial.println();
-    Serial.println();
-}
-
-// ── Leitura serial ────────────────────────────────────────────────────────────
-
-void handle_serial() {
-    if (!Serial.available()) return;
-    char key = (char)Serial.read();
-
-    // Normaliza para maiúsculo
-    if (key >= 'a' && key <= 'z') key -= 32;
-
-    // 'N' avança fase após vitória
-    if (key == 'N') {
-        if (phase_won) {
-            advance_phase();
-        } else {
-            Serial.println("[SERIAL] Faca S=1 primeiro para avanÃ§ar de fase.");
-        }
-        return;
-    }
-
-    // Ignora quebras de linha
-    if (key == '\n' || key == '\r') return;
-
-    // Busca a entrada correspondente à letra digitada
-    int idx = -1;
-    for (int i = 0; i < num_inputs; i++) {
-        if (input_labels[i] == key) { idx = i; break; }
-    }
-
-    if (idx >= 0) {
-        Serial.print("[SERIAL] Alternando ");
-        Serial.print(input_labels[idx]);
-        Serial.println("...");
-        toggle_input(idx);
-        check_victory();
-        print_state();
-    } else {
-        Serial.print("[SERIAL] '");
-        Serial.print(key);
-        Serial.println("' nao existe nesta fase.");
-    }
-}
-
-// ── Leitura dos botões ────────────────────────────────────────────────────────
-
-// void handle_buttons(unsigned long now) {
-//     bool curr_cycle  = digitalRead(BTN_CYCLE);
-//     bool curr_toggle = digitalRead(BTN_TOGGLE);
-
-//     // ── Modo leitura: BTN_CYCLE avança telas ─────────────────────────────────
-//     if (game_mode == MODE_READING) {
-//         if (prev_cycle == HIGH && curr_cycle == LOW) {
-//             if (now - last_cycle_press > DEBOUNCE_MS) {
-//                 last_cycle_press = now;
-//                 reading_next();   // avança tela ou entra no jogo
-//             }
-//         }
-//         // BTN_TOGGLE ignorado no modo leitura
-//         prev_cycle  = curr_cycle;
-//         prev_toggle = curr_toggle;
-//         return;
-//     }
-
-//     // ── Modo jogo: comportamento original ────────────────────────────────────
-//     if (prev_cycle == HIGH && curr_cycle == LOW) {
-//         if (now - last_cycle_press > DEBOUNCE_MS) {
-//             last_cycle_press = now;
-//             cycle_selected_input();
-//             print_state();
-//         }
-//     }
-
-//     if (prev_toggle == HIGH && curr_toggle == LOW) {
-//         if (now - last_toggle_press > DEBOUNCE_MS) {
-//             last_toggle_press = now;
-//             toggle_input(selected_input);
-//             check_victory();
-//             print_state();
-//         }
-//     }
-
-//     prev_cycle  = curr_cycle;
-//     prev_toggle = curr_toggle;
-
-//     desenharFase1();
-// }
+// ── Leitura dos botões / Joystick ─────────────────────────────────────────────
 
 void handle_joystick(unsigned long now) {
     int x_val = readFilteredX();
     int y_val = readFilteredY();
     bool curr_sw = digitalRead(JOY_SW);
-
-    static unsigned long last_log = 0;
-
 
     // ── 1. Interrupção por Polling no Chaveamento do Eixo Z (SW) ─────────
     if (prev_sw == HIGH && curr_sw == LOW) {
@@ -803,8 +675,6 @@ void handle_joystick(unsigned long now) {
             
             if (game_mode == MODE_PLAYING) {
                 toggle_input(selected_input);
-                check_victory();
-                print_state();
             } else if (current_screen == 3 || current_screen == 4) {
                 alterar_cor_joystick();
             }
@@ -835,78 +705,59 @@ void handle_joystick(unsigned long now) {
         y_center_time = now;
     }
 
-    bool x_in_center = (abs(x_val - joy_center_x) <= JOY_CENTER_ZONE);
-    if (x_in_center) {
-        if (now - x_center_time > JOY_SETTLE_TIME) {
-            axis_x_active = false;
-        }
-    } else {
-        x_center_time = now;
-    }
+    // bool x_in_center = (abs(x_val - joy_center_x) <= JOY_CENTER_ZONE);
+    // if (x_in_center) {
+    //     if (now - x_center_time > JOY_SETTLE_TIME) {
+    //         axis_x_active = false;
+    //     }
+    // } else {
+    //     x_center_time = now;
+    // }
 
-    if (millis() - last_log > 500) {
-        last_log = millis();
-        Serial.printf("X=%4d  Y=%4d  | deadX=%d  axisX=%d\n", x_val, y_val, x_in_deadzone, axis_x_active);
-    }
-
-// ── 3. ESTADO: MODO LEITURA (Varredura de Cenas via Eixo X) ─────────
-    if (game_mode == MODE_READING) {
-        if (!axis_x_active) {
-            if (x_val > joy_center_x + JOY_DEADZONE) {
-                reading_next();
-                axis_x_active = true;
-            } else if (x_val < joy_center_x - JOY_DEADZONE) {
-                reading_prev();
-                axis_x_active = true;
-            }
-        }
-    }
-
-    if (game_mode == MODE_READING && !axis_x_active && (millis() - last_reading_action > 400)) {
+    // ── 3. ESTADO: MODO LEITURA (Varredura de Cenas via Eixo X) ─────────
+    if (game_mode == MODE_READING && !axis_x_active && (now - last_reading_action > 400)) {
         if (x_val > joy_center_x + JOY_DEADZONE) {
             reading_next();
             axis_x_active = true;
-            last_reading_action = millis();
+            last_reading_action = now;
         } else if (x_val < joy_center_x - JOY_DEADZONE) {
             reading_prev();
             axis_x_active = true;
-            last_reading_action = millis();
+            last_reading_action = now;
         }
     }
 
     // ── 4. ESTADO: MODO JOGO (Operação das Portas Lógicas) ──────────────
     if (game_mode == MODE_PLAYING) {
         
-        // Eixo Y (Cima / Baixo): Selecionar qual entrada será operada
-        if (!axis_y_active) {
-            if (y_val > joy_center_y + JOY_DEADZONE) {
-                cycle_selected_input(1);
-                print_state();
-                axis_y_active = true;
-            } else if (y_val < joy_center_y - JOY_DEADZONE) {
-                cycle_selected_input(-1);
-                print_state();
-                axis_y_active = true;
+        // Trava de segurança da Cena Final
+        if (current_phase > NUM_PHASES) {
+            // Mover para a direita na tela final reinicia o jogo
+            if (!axis_x_active && x_val > joy_center_x + JOY_DEADZONE) { 
+                reiniciar_para_bem_vindo();
+                axis_x_active = true;
             }
+            return; // Sai da função para bloquear as portas lógicas
         }
 
-        // Eixo X (Direita / Esquerda): Trocar de Fase
-        if (!axis_x_active) {
-            if (x_val > joy_center_x + JOY_DEADZONE) {
-                if (phase_won) {
-                    advance_phase();
-                } else {
-                    Serial.println("[AVISO] Resolva o circuito (S=1) para avancar!");
-                }
-                axis_x_active = true;
-            } else if (x_val < joy_center_x - JOY_DEADZONE) {
-                previous_phase();
+        // Intertravamento (Mutual Exclusion)
+        if (!axis_x_active && !axis_y_active) {
+            
+            // Prioridade de varredura para o Eixo Y (Cima / Baixo)
+            if (y_val > joy_center_y + JOY_DEADZONE) {
+                cycle_selected_input(1);
+                axis_y_active = true;
+            } 
+            else if (y_val < joy_center_y - JOY_DEADZONE) {
+                cycle_selected_input(-1);
+                axis_y_active = true;
+            }
+            // Avaliação do Eixo X (DIREITA) para prosseguir/verificar
+            else if (x_val > joy_center_x + JOY_DEADZONE) { 
+                check_victory();
                 axis_x_active = true;
             }
         }
-        
-        // desenharFase1();
-        // desenharFaseAtual();
     }
 }
 
@@ -921,12 +772,20 @@ void calibrate_joystick() {
     }
     joy_center_x = sumX / 200;
     joy_center_y = sumY / 200;
-    Serial.printf("Centro calibrado: X=%d Y=%d\n", joy_center_x, joy_center_y);
 }
 
 void atualizar_rgb() {
-    if (values[output_id]) rgb_verde();
-    else                   rgb_vermelho();
+    if (exibir_resultado) {
+        // Revela o resultado lógico real apenas após o jogador "prosseguir" (verificar)
+        if (values[output_id]) {
+            rgb_verde();
+        } else {
+            rgb_vermelho();
+        }
+    } else {
+        // Mantém a cor de trabalho/mistura enquanto o jogador estiver operando as chaves
+        rgb_neutro();
+    }
 }
 
 // Sincroniza a fita de LEDs com o estado lógico e a interface do usuário
@@ -935,25 +794,48 @@ void atualizar_fita_led() {
     
     // Iteramos apenas até o número de entradas ativas na fase atual
     for (int i = 0; i < num_inputs; i++) {
+        int node_id = input_ids[i];
+        
         if (i == selected_input) {
-            // A entrada sob o cursor acende em branco (R:255, G:255, B:255)
-            fita_LED.setPixelColor(i, fita_LED.Color(255, 255, 255));
-        } else {
-            // As outras entradas mostram o estado lógico atual da planta
-            // 0 = Vermelho tênue, 1 = Verde tênue
-            int node_id = input_ids[i];
-            if (values[node_id]) {
-                fita_LED.setPixelColor(i, fita_LED.Color(0, 30, 0)); // Estado HIGH
+            // A entrada sob o cursor pisca na cor correspondente ao nível lógico real
+            if (blink_state) {
+                if (values[node_id]) {
+                    fita_LED.setPixelColor(i, fita_LED.Color(0, 255, 0));   // Verde Vivo (HIGH)
+                } else {
+                    fita_LED.setPixelColor(i, fita_LED.Color(255, 0, 0));   // Vermelho Vivo (LOW)
+                }
             } else {
-                fita_LED.setPixelColor(i, fita_LED.Color(30, 0, 0)); // Estado LOW
+                fita_LED.setPixelColor(i, fita_LED.Color(0, 0, 0));         // Apagado no ciclo de oscilação
+            }
+        } else {
+            // As outras entradas mantêm a sinalização em modo tênue (planta de monitoramento)
+            if (values[node_id]) {
+                fita_LED.setPixelColor(i, fita_LED.Color(0, 30, 0));        // Estado HIGH tênue
+            } else {
+                fita_LED.setPixelColor(i, fita_LED.Color(30, 0, 0));        // Estado LOW tênue
             }
         }
     }
     fita_LED.show(); // Dispara o sinal via periférico RMT do ESP32
 }
 
+void atualizar_fita_rainbow() {
+    unsigned long now = millis();
+    for (int i = 0; i < NUMERO_LEDS; i++) {
+        int hue = ((now / 10) + (i * 60)) % 360;
+        uint16_t cor565 = hueToRGB565(hue);
+        // Converte 565 de volta para RGB888 para o NeoPixel
+        uint8_t r = ((cor565 >> 11) & 0x1F) << 3;
+        uint8_t g = ((cor565 >> 5)  & 0x3F) << 2;
+        uint8_t b = ( cor565        & 0x1F) << 3;
+        fita_LED.setPixelColor(i, fita_LED.Color(r, g, b));
+    }
+    fita_LED.show();
+}
+
 void setup() {
-    Serial.begin(115200);
+    delay(500); // dá tempo do monitor serial conectar
+
     pinMode(JOY_SW, INPUT_PULLUP);
     pinMode(RGB_R, OUTPUT);
     pinMode(RGB_G, OUTPUT);
@@ -963,30 +845,72 @@ void setup() {
     fita_LED.show();
 
     calibrate_joystick();
-    int joy_center_x = 2048, joy_center_y = 2048;
+
+    dfplayer_init();
 
     load_phase(current_phase);
+    
+    playGameMusic(GameTrack::MENU, true);
+
     propagate();
 
-    Serial.println("=== LOGIC GATE PUZZLE — 10 FASES ===");
-    Serial.println("Objetivo: fazer S = 1 em cada fase");
-    Serial.println("~ = NOT  letras juntas = AND  + = OR");
-    Serial.println();
-    print_state();
-
     inicializar_display();
-
-    iniciarCoresFase();      // inicializa COR_ATIVO/INATIVO/FUNDO
-
-    // Exibe a primeira tela de leitura
+    
+    iniciarCoresFase();
     reading_show_current();
+}
+
+void reiniciar_para_bem_vindo() {
+    vidas          = 3;
+    movimentos     = 0;
+    current_phase  = 1;
+    game_mode      = MODE_READING;
+    current_screen = 0;
+    
+    // Prepara a fase 1 em background (sem tocar a música de gameplay ainda)
+    load_phase(current_phase); 
+    
+    // Força o retorno do áudio e da tela inicial
+    playGameMusic(GameTrack::MENU, true);
+    reading_show_current(); 
 }
 
 void loop() {
     unsigned long now = millis();
 
-    handle_joystick(now);
-    handle_serial();
+    if (!victory_pending && !defeat_pending) {
+        handle_joystick(now);
+    }
+
+    // ── Polling de reloop de áudio (substitui EQ/busy pin) ───────────────
+    if (audio_looping && (now - last_audio_check >= AUDIO_POLL_MS)) {
+        last_audio_check = now;
+        if (!dfplayer_is_playing()) {
+            dfplayer_play(static_cast<uint8_t>(current_track));
+        }
+    }
+
+    if (now - last_led_update >= LED_UPDATE_MS) {
+        last_led_update = now;
+        if (game_mode == MODE_READING) {
+            
+            // Se estiver na cena "PRESSIONE" (Índice 3 do array reading_screens)
+            if (current_screen == 3) {
+                fita_LED.clear();
+                // Verde se estado for true, Vermelho se for false
+                uint32_t cor_sw = estado_joystick_painel ? fita_LED.Color(0, 220, 0) : fita_LED.Color(220, 0, 0);
+                
+                for (int i = 0; i < NUMERO_LEDS; i++) {
+                    fita_LED.setPixelColor(i, cor_sw);
+                }
+                fita_LED.show();
+            } 
+            // Para as outras telas de leitura, mantém o arco-íris dinâmico
+            else {
+                atualizar_fita_rainbow();
+            }
+        }
+    }
 
     if (game_mode == MODE_READING) {
         if (now - last_rainbow_update >= RAINBOW_INTERVAL) {
@@ -994,9 +918,6 @@ void loop() {
             updateRainbowColor();               // calcula nova cor
             reading_show_current();             // redesenha a tela atual
         }
-
-        // Movimenta a cobrinha na borda
-        // advanceSnake();
     }
 
     // 3. Máquina de Estados: Modo Jogo (Atualização de Lógica/Timers)
@@ -1006,6 +927,9 @@ void loop() {
             last_blink_time = now;
             blink_state = !blink_state; // Alterna o estado do bit (0/1)
             display_dirty = true;       // Aciona o gatilho para atualizar a IHM
+
+            // Força a atualização do barramento periférico da fita de LED a cada transição do clock de pisca
+            atualizar_fita_led();
         }
     }
 
@@ -1015,4 +939,20 @@ void loop() {
         desenharFaseAtual();
     }
 
+    // Timer de vitória: avança fase após 1s sem bloquear
+    if (victory_pending && (millis() - result_timer_start >= 1000)) {
+        victory_pending = false;
+        advance_phase();
+    }
+
+    // Timer de derrota: reseta ou volta fase após 1.5s sem bloquear    
+    if (defeat_pending && (millis() - result_timer_start >= 1500)) {
+        defeat_pending = false;
+        exibir_resultado = false; // <-- RESET: Retorna o display para as cores neutras
+        display_dirty = true;     // <-- FORÇA REDESENHO: Avisa o renderizador da mudança
+        
+        if (vidas <= 0) {
+            reiniciar_para_bem_vindo();
+        }
+    }
 }

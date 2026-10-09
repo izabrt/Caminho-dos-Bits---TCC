@@ -22,59 +22,59 @@ void getBorderCoords(int pos, int &x, int &y) {
 }
 
 // Desenha um ponto brilhante na posição atual da borda, com cor arco-íris
-void initSnake() {
-    for (int i = 0; i < SNAKE_LENGTH; i++) {
-        snake_body[i] = (PERIMETER - SNAKE_LENGTH + i) % PERIMETER;
-    }
-    snake_head = 0;
-    snake_initialized = true;
-}
+// void initSnake() {
+//     for (int i = 0; i < SNAKE_LENGTH; i++) {
+//         snake_body[i] = (PERIMETER - SNAKE_LENGTH + i) % PERIMETER;
+//     }
+//     snake_head = 0;
+//     snake_initialized = true;
+// }
 
 // Desenha a cobrinha na borda – cada segmento com uma cor do arco-íris
-void drawSnake() {
-    for (int i = 0; i < SNAKE_LENGTH; i++) {
-        int x, y;
-        getBorderCoords(snake_body[i], x, y);
+// void drawSnake() {
+//     for (int i = 0; i < SNAKE_LENGTH; i++) {
+//         int x, y;
+//         getBorderCoords(snake_body[i], x, y);
         
-        // Cor gradiente: cabeça mais brilhante, cauda mais escura
-        int hue = (millis() / 10 + i * 15) % 360;
-        uint16_t color = hueToRGB565(hue);
+//         // Cor gradiente: cabeça mais brilhante, cauda mais escura
+//         int hue = (millis() / 10 + i * 15) % 360;
+//         uint16_t color = hueToRGB565(hue);
         
-        // Pixels maiores (2x2) para mais destaque (opcional)
-        // display->fillRect(x, y, 1, 1, color);  // 1x1 normal
-        display->drawPixel(x, y, color);          // descomente se quiser 1x1
-    }
-}
+//         // Pixels maiores (2x2) para mais destaque (opcional)
+//         // display->fillRect(x, y, 1, 1, color);  // 1x1 normal
+//         display->drawPixel(x, y, color);          // descomente se quiser 1x1
+//     }
+// }
 
-void clearSnake() {
-    for (int i = 0; i < SNAKE_LENGTH; i++) {
-        int x, y;
-        getBorderCoords(snake_body[i], x, y);
-        display->drawPixel(x, y, COR_FUNDO);  // apaga com a cor de fundo
-    }
-}
+// void clearSnake() {
+//     for (int i = 0; i < SNAKE_LENGTH; i++) {
+//         int x, y;
+//         getBorderCoords(snake_body[i], x, y);
+//         display->drawPixel(x, y, COR_FUNDO);  // apaga com a cor de fundo
+//     }
+// }
 
-void advanceSnake() {
-    unsigned long now = millis();
-    if (now - last_snake_move >= BORDER_SPEED_MS) {
-        last_snake_move = now;
+// void advanceSnake() {
+//     unsigned long now = millis();
+//     if (now - last_snake_move >= BORDER_SPEED_MS) {
+//         last_snake_move = now;
         
-        // Apaga a cobrinha atual
-        clearSnake();
+//         // Apaga a cobrinha atual
+//         clearSnake();
         
-        // Move todos os segmentos: corpo vira cauda, cabeça avança
-        for (int i = SNAKE_LENGTH - 1; i > 0; i--) {
-            snake_body[i] = snake_body[i - 1];
-        }
-        snake_body[0] = snake_head;  // a cabeça ocupa a posição atual
+//         // Move todos os segmentos: corpo vira cauda, cabeça avança
+//         for (int i = SNAKE_LENGTH - 1; i > 0; i--) {
+//             snake_body[i] = snake_body[i - 1];
+//         }
+//         snake_body[0] = snake_head;  // a cabeça ocupa a posição atual
         
-        // Avança a cabeça para a próxima posição
-        snake_head = (snake_head + 1) % PERIMETER;
+//         // Avança a cabeça para a próxima posição
+//         snake_head = (snake_head + 1) % PERIMETER;
         
-        // Redesenha a cobrinha na nova posição
-        drawSnake();
-    }
-}
+//         // Redesenha a cobrinha na nova posição
+//         drawSnake();
+//     }
+// }
 
 // Converte HSV (Hue de 0 a 359) para RGB e depois para cor 565
 uint16_t hueToRGB565(int hue) {
@@ -148,6 +148,7 @@ void bem_vindo() {
 // ── 2. INSTRUÇÕES: EIXO X (Avançar/Voltar) ──────────────────────────────────
 void instrucoes_eixo_x() {
     // 1. Renderiza o background estocástico dinâmico (Camada de Fundo)
+    display->clearScreen();
     drawMatrixBackground();
 
     uint16_t branco   = display->color565(255, 255, 255);
@@ -215,6 +216,7 @@ void instrucoes_eixo_x() {
 // ── 3. INSTRUÇÕES: EIXO Y (Selecionar Entrada) ──────────────────────────────
 void instrucoes_eixo_y() {
     // 1. Renderiza o background estocástico dinâmico (Camada de Fundo)
+    display->clearScreen();
     drawMatrixBackground();
 
     uint16_t branco = display->color565(255, 255, 255);
@@ -273,24 +275,25 @@ void instrucoes_eixo_y() {
     int step = (millis() / period_ms) % ((num_leds - 1) * 2);
     int active_led = (step < num_leds) ? step : ((num_leds - 1) * 2) - step;
 
-    fita_LED.clear();
-    for (int i = 0; i < num_leds; i++) {
-        if (i == active_led) {
-            // LED ativo em potência máxima branca
-            fita_LED.setPixelColor(i, fita_LED.Color(255, 255, 255));
-        } else {
-            // LEDs inativos mantidos desligados
-            fita_LED.setPixelColor(i, fita_LED.Color(0, 0, 0));
-        }
-    }
+    // fita_LED.clear();
+    // for (int i = 0; i < num_leds; i++) {
+    //     if (i == active_led) {
+    //         // LED ativo em potência máxima branca
+    //         fita_LED.setPixelColor(i, fita_LED.Color(255, 255, 255));
+    //     } else {
+    //         // LEDs inativos mantidos desligados
+    //         fita_LED.setPixelColor(i, fita_LED.Color(0, 0, 0));
+    //     }
+    // }
     
-    // Despacha o buffer de memória para o silício da fita WS2812B
-    fita_LED.show(); 
+    // // Despacha o buffer de memória para o silício da fita WS2812B
+    // fita_LED.show(); 
 }
 
 // ── 4. INSTRUÇÕES: BOTÃO SW (Clicar/Pressionar) ─────────────────────────────
 void instrucoes_botao_sw() {
     // 1. Renderiza o background estocástico dinâmico (Camada de Fundo)
+    display->clearScreen();
     drawMatrixBackground();
 
     uint16_t branco   = display->color565(255, 255, 255);
@@ -303,15 +306,15 @@ void instrucoes_botao_sw() {
 
     // ── Hardware In-The-Loop: Fita de LEDs Física ─────────────────────────────
     // Responde instantaneamente ao estado real do hardware (acionado via interrupção/polling)
-    fita_LED.clear();
-    for (int i = 0; i < NUMERO_LEDS; i++) {
-        if (estado_joystick_painel) {
-            fita_LED.setPixelColor(i, fita_LED.Color(0, 220, 0)); // LIGADO (Verde)
-        } else {
-            fita_LED.setPixelColor(i, fita_LED.Color(220, 0, 0)); // DESLIGADO (Vermelho)
-        }
-    }
-    fita_LED.show();
+    // fita_LED.clear();
+    // for (int i = 0; i < NUMERO_LEDS; i++) {
+    //     if (estado_joystick_painel) {
+    //         fita_LED.setPixelColor(i, fita_LED.Color(0, 220, 0)); // LIGADO (Verde)
+    //     } else {
+    //         fita_LED.setPixelColor(i, fita_LED.Color(220, 0, 0)); // DESLIGADO (Vermelho)
+    //     }
+    // }
+    // fita_LED.show();
 
     // ── Animação Autônoma Temporizada (IHM Virtual) ───────────────────────────
     int ciclo = millis() % 800;
@@ -371,6 +374,7 @@ void instrucoes_botao_sw() {
 // ── 5. INSTRUÇÕES: LEGENDA DE CORES (Estados Lógicos) ───────────────────────
 void instrucoes_cores() {
     // 1. Renderiza o background estocástico dinâmico (Camada de Fundo)
+    display->clearScreen();
     drawMatrixBackground();
 
     uint16_t branco   = display->color565(255, 255, 255);
@@ -382,15 +386,15 @@ void instrucoes_cores() {
 
     // ── Hardware In-The-Loop: Fita de LEDs Física ─────────────────────────────
     // Responde instantaneamente ao estado real do hardware (acionado via interrupção/polling)
-    fita_LED.clear();
-    for (int i = 0; i < NUMERO_LEDS; i++) {
-        if (estado_joystick_painel) {
-            fita_LED.setPixelColor(i, fita_LED.Color(0, 220, 0)); // LIGADO (Verde)
-        } else {
-            fita_LED.setPixelColor(i, fita_LED.Color(220, 0, 0)); // DESLIGADO (Vermelho)
-        }
-    }
-    fita_LED.show();
+    // fita_LED.clear();
+    // for (int i = 0; i < NUMERO_LEDS; i++) {
+    //     if (estado_joystick_painel) {
+    //         fita_LED.setPixelColor(i, fita_LED.Color(0, 220, 0)); // LIGADO (Verde)
+    //     } else {
+    //         fita_LED.setPixelColor(i, fita_LED.Color(220, 0, 0)); // DESLIGADO (Vermelho)
+    //     }
+    // }
+    // fita_LED.show();
 
     // ── Configuração Tipográfica ──────────────────────────────────────────────
     display->setFont(&TomThumb);
@@ -428,5 +432,60 @@ void instrucoes_cores() {
     display->setCursor(x_base + 6, y2 + BASELINE_OFFSET);
     display->print("LIGADO");
 
+    display->setFont(NULL); // Libera o ponteiro de fonte
+}
+
+// ── 6. CENA FINAL DO JOGO ───────────────────────────────────────────────────
+void cena_final_jogo() {
+    // Renderiza o background estocástico dinâmico (Camada de Fundo)
+    display->clearScreen();
+    drawMatrixBackground();
+
+    uint16_t branco = display->color565(255, 255, 255);
+    uint16_t ouro   = display->color565(255, 215, 0); // Destaque para o "PARABENS"
+
+    display->setFont(&TomThumb);
+    display->setTextSize(1);
+    display->setTextWrap(false);
+
+    const int ADVANCE_X = 4;
+    const int CHAR_H_LOCAL = 6;
+    const int BASELINE_OFFSET = 5;
+    const int LINE_SPACING = 2;
+
+    // Quebra do texto para respeitar a largura máxima de 64px
+    const char* linha1 = "PARABENS";
+    const char* linha2 = "VOCE CHEGOU";
+    const char* linha3 = "AO FINAL";
+    
+    // Formata a string dinâmica com a variável de movimentos externa
+    char linha4[15];
+    sprintf(linha4, "MOV: %d", movimentos);
+
+    const char* linhas[] = { linha1, linha2, linha3, linha4 };
+    const int num_linhas = 4;
+
+    // Centralização vertical do bloco de 4 linhas
+    int block_h = num_linhas * CHAR_H_LOCAL + (num_linhas - 1) * LINE_SPACING;
+    int y_start = (PANEL_HEIGHT - block_h) / 2;
+
+    for (int i = 0; i < num_linhas; i++) {
+        int len = strlen(linhas[i]);
+        int text_width = len * ADVANCE_X;
+        
+        int x_box = (PANEL_WIDTH - text_width) / 2;
+        int y_box = y_start + i * (CHAR_H_LOCAL + LINE_SPACING);
+
+        // Aplica a máscara de apagamento (Z-buffer via software)
+        display->fillRect(x_box - 1, y_box - 1, text_width + 2, CHAR_H_LOCAL + 2, 0x0000);
+        
+        // Define a cor: Ouro para a primeira linha, Branco para o resto
+        display->setTextColor((i == 0) ? ouro : branco);
+        
+        // Renderiza o texto compensando a translação da baseline
+        display->setCursor(x_box, y_box + BASELINE_OFFSET);
+        display->print(linhas[i]);
+    }
+    
     display->setFont(NULL); // Libera o ponteiro de fonte
 }
